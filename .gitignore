@@ -1,0 +1,12 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+/out/
+/scripts/
+*.jpg
+*.xml
+!requirements.txt
