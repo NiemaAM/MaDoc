@@ -119,9 +119,9 @@ EMPLOYEE_TITLE = "FONCTIONAIRE ET OFFECIER DETAT CIVIL"
 
 # --- Arabic normalisation helpers (used for reliable dictionary matching) ---
 # diacritics (tashkeel) + tatweel
-ARABIC_DIACRITICS = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")
+ARABIC_DIACRITICS = re.compile("[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed\u0640]")
 # invisible / bidi control characters that often come from copy-paste or OCR
-INVISIBLE_CHARS = re.compile(r"[​-‏‪-‮⁦-⁩﻿]")
+INVISIBLE_CHARS = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 # Arabic-Indic and Persian digits -> ASCII digits
 DIGIT_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 # letter variants -> one canonical letter (only used to build comparison keys)
@@ -140,9 +140,9 @@ def normalize_text(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def ar_key(value):
-    """Build a comparison key: no diacritics, unified letters, no leading 'ال' on words."""
-    text = normalize_text(value)
+@lru_cache(maxsize=65536)
+def _ar_key(text):
+    text = normalize_text(text)
     text = INVISIBLE_CHARS.sub("", text)
     text = ARABIC_DIACRITICS.sub("", text)
     text = text.translate(CHAR_MAP)
@@ -153,6 +153,14 @@ def ar_key(value):
             token = token[2:]
         tokens.append(SPELLING_VARIANTS.get(token, token))
     return " ".join(tokens)
+
+
+def ar_key(value):
+    """Build a comparison key: no diacritics, unified letters, no leading 'ال' on words.
+
+    Called thousands of times per record with the same words: the result is cached (see _ar_key).
+    """
+    return _ar_key(value if isinstance(value, str) else str(value))
 
 
 # extract based on patterns
@@ -206,6 +214,12 @@ def get_places_lookup():
             if isinstance(french, str) and french.strip()}
 
 
+@lru_cache(maxsize=None)
+def get_place_first_words():
+    """First word of every known place key (to tell "بخريبڭة" = ب + a city from a word that starts with ب)."""
+    return frozenset(key.split()[0] for key in get_places_lookup() if key)
+
+
 def fuzzy_lookup(key, lookup, cutoff=0.85):
     """lookup[key], else the value of the closest key (typos: "ربة البيتت" -> "ربة البيت"), else None.
 
@@ -227,16 +241,22 @@ def fuzzy_lookup(key, lookup, cutoff=0.85):
 
 
 def read_text_file(path):
-    """Read the input file, trying the usual Arabic encodings."""
-    path = Path(path)
-    last_error = None
-    for encoding in ("utf-8-sig", "cp1256", "utf-16"):
+    """Read the input file: UTF-16 (with its BOM), UTF-8, else Windows Arabic (cp1256).
+
+    cp1256 decodes almost any bytes without error, so it must be the last try: a UTF-16 file tried with it
+    would come back as garbage instead of failing. Line ends are always "\\n" (as in text mode), and a
+    missing file raises FileNotFoundError as usual.
+    """
+    data = Path(path).read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16")
+    else:
         try:
-            with path.open("r", encoding=encoding) as file:
-                return file.read()
-        except (UnicodeError, OSError) as e:
-            last_error = e
-    raise OSError(last_error)
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("cp1256")
+    # same line ends as a file opened in text mode (the NER offsets are positions in this string)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_json_file(path):
@@ -277,3 +297,40 @@ def kraken_command():
     except (ImportError, ValueError):
         pass
     return ["kraken"]
+
+@lru_cache(maxsize=None)
+def resolve_device(device):
+    """The kraken device to use: a CUDA device that torch cannot use falls back to "cpu" with a warning.
+
+    The torch installed by a plain `pip install torch` on Windows is CPU only: kraken then fails inside its
+    segmentation step with no useful message. torch is only imported when a GPU is asked for.
+    """
+    device = (device or "cpu").strip()
+    if not device.startswith("cuda"):
+        return device
+    try:
+        import torch
+    except ImportError:
+        return device  # kraken will say what is wrong
+    index = int(device.split(":", 1)[1]) if ":" in device and device.split(":", 1)[1].isdigit() else 0
+    if torch.cuda.is_available() and index < torch.cuda.device_count():
+        return device
+    reason = ("this torch build has no CUDA support (torch " + torch.__version__ + ")"
+              if not torch.backends.cuda.is_built() else "no CUDA GPU " + str(index) + " is visible")
+    print(f"Warning: device {device!r} cannot be used, {reason}: kraken runs on the CPU.", file=sys.stderr)
+    return "cpu"
+
+
+def run_kraken(args, output, step):
+    """Run the kraken CLI with these arguments and check that it wrote `output`.
+
+    -r (--raise-on-error) makes kraken stop with its real error and a non-zero exit code: without it a failed
+    image is only logged ("Failed processing ...: 1") and the command still ends normally.
+    """
+    import subprocess
+
+    cmd = [*kraken_command(), "-r", *args]
+    print("Running:", " ".join(cmd), file=sys.stderr)
+    subprocess.run(cmd, check=True)
+    if not Path(output).is_file():
+        raise RuntimeError(f"kraken {step} failed: no output written (see the kraken messages above)")

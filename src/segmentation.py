@@ -12,12 +12,11 @@ The PageXML keeps the image name so recognition.py can find the image again.
 """
 
 import argparse
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from common import kraken_command
+from common import resolve_device, run_kraken
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_SEGMENTATION = ROOT / "models" / "blla.mlmodel"
@@ -25,15 +24,12 @@ MODEL_SEGMENTATION = ROOT / "models" / "blla.mlmodel"
 
 def run_segmentation(image_file, output_xml, model=MODEL_SEGMENTATION, device="cpu"):
     """Run kraken BLLA segmentation, PageXML output."""
-    cmd = [
-        *kraken_command(),
-        "-d", device,
+    run_kraken([
+        "-d", resolve_device(device),
         "-x",                   # PageXML output
         "-i", str(image_file), str(output_xml),
         "segment", "-bl", "-i", str(model),
-    ]
-    print("Running:", " ".join(cmd), file=sys.stderr)
-    subprocess.run(cmd, check=True)
+    ], output_xml, "segmentation")
 
 
 def segment_image(image_file, model=MODEL_SEGMENTATION, device="cpu"):

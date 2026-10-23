@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from classificator import classify
-from common import read_json_file, read_text_file, write_json
+from common import read_json_file, read_text_file, resolve_device, write_json
 from recognition import MODEL_RECOGNITION, recognize_xml
 from segmentation import MODEL_SEGMENTATION, segment_image
 from converter import convert
@@ -121,7 +121,7 @@ def main():
 
     # the same string goes to the classificator and to the parser: the NER offsets must match it
     raw_text = text_from_source(
-        args.input_file, args.image, args.save_stages, args.device,
+        args.input_file, args.image, args.save_stages, resolve_device(args.device),
         args.segmentation_model, args.recognition_model,
     )
     record, report, notes = run_pipeline(

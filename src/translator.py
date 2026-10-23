@@ -7,6 +7,7 @@ the dictionary (mapper.py) did not find. Official place names come
 from cities.json / places.json and the child's French family name is sent with the request, so the
 model cannot choose another spelling. Without GROQ_API_KEY (or the groq package) the original Arabic
 values are kept, the validator then reports the French fields as untranslated.
+GROQ_MODEL (environment or .env) chooses another Groq model. Messages go to stderr, never to stdout.
 """
 
 import argparse
@@ -14,6 +15,9 @@ import copy
 import json
 import os
 import re
+import sys
+import time
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,6 +32,17 @@ from common import (
 
 # load Groq API Key
 load_dotenv()
+
+# Groq model (GROQ_MODEL in the environment / .env replaces it)
+MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+# Arabic script block: a French value must not contain any of it
+ARABIC_SCRIPT = re.compile("[\u0600-\u06ff]")
+
+
+def log(*args):
+    """Messages go to stderr: stdout carries the JSON record (python src/pipeline.py x.txt > record.json)."""
+    print(*args, file=sys.stderr)
+
 
 _client = None
 _client_checked = False
@@ -52,6 +67,12 @@ def is_available():
     return get_client() is not None
 
 
+@lru_cache(maxsize=None)
+def places_max_words():
+    """Number of words of the longest known place name (the table has thousands of entries)."""
+    return max((len(key.split()) for key in get_places_lookup()), default=0)
+
+
 def find_known_places(text):
     """Return {arabic name: official French name} for every place of cities.json / places.json found in text."""
     lookup = get_places_lookup()
@@ -59,13 +80,13 @@ def find_known_places(text):
         return {}
     tokens = text.split()
     keys = [ar_key(token) for token in tokens]
-    max_len = max(len(key.split()) for key in lookup)
+    max_len = places_max_words()
     found = {}
     i = 0
     while i < len(tokens):
         for n in range(min(max_len, len(tokens) - i), 0, -1):
             candidate = " ".join(keys[i:i + n])
-            if candidate not in lookup and candidate.startswith("ب") and n >= 1:
+            if candidate not in lookup and candidate.startswith("ب"):
                 # attached preposition: "بالمحمدية" -> "المحمدية"
                 candidate = ar_key(candidate[1:])
             if candidate in lookup:
@@ -74,7 +95,6 @@ def find_known_places(text):
                 break
         else:
             i += 1
-            continue
     return found
 
 
@@ -91,7 +111,7 @@ def postprocess_output(item, output):
     if item["type"] == "name":
         family = item.get("family_name") or {}
         if family and family["fr"].lower() not in text.lower():
-            print(f"Warning: family name '{family['fr']}' missing from the translation of '{item['text']}'.")
+            log(f"Warning: family name '{family['fr']}' missing from the translation of '{item['text']}'.")
         # lineage words are mandatory: بن = Fils de, بنت = Fille de
         if re.match(r"(?:ابن|بن)\s", source + " ") and not re.match(r"fils de\b", text, re.I):
             text = "Fils de " + re.sub(r"^(?:ben|ibn|bin)\s+", "", text, flags=re.I)
@@ -100,7 +120,7 @@ def postprocess_output(item, output):
     elif item["type"] == "address":
         for arabic, french in item.get("glossary", {}).items():
             if french.lower() not in text.lower():
-                print(f"Warning: official name '{french}' ({arabic}) missing from the translation.")
+                log(f"Warning: official name '{french}' ({arabic}) missing from the translation.")
     elif item["type"] == "job":
         # same style as jobs.json: upper case, no punctuation around
         text = re.sub(r"\s+", " ", text.strip(" .,;:-\"'")).upper()
@@ -123,7 +143,7 @@ def translate_batch(items):
 
     client = get_client()
     if client is None:
-        print("Groq client unavailable (missing groq package or GROQ_API_KEY); keeping original values.")
+        log("Groq client unavailable (missing groq package or GROQ_API_KEY); keeping original values.")
         return originals
 
     prompt = """
@@ -190,9 +210,11 @@ def translate_batch(items):
     outputs = None
     # one retry: transient API / formatting failures are common
     for attempt in range(2):
+        if attempt:
+            time.sleep(2)  # give a rate limit / overloaded server a moment before the retry
         try:
             response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
+                model=MODEL,
                 messages=[
                     {"role": "system", "content": prompt},
                     {
@@ -208,24 +230,24 @@ def translate_batch(items):
             choice = response.choices[0]
             content = choice.message.content
             if not content or not content.strip():
-                print("Groq returned no text.")
-                print("Finish reason:", choice.finish_reason)
-                print("Usage:", response.usage)
+                log("Groq returned no text.")
+                log("Finish reason:", choice.finish_reason)
+                log("Usage:", response.usage)
                 continue
             # tolerate Markdown fences around the JSON
             content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
             result = json.loads(content)
             candidate = result.get("results")
             if not isinstance(candidate, list) or len(candidate) != len(items):
-                print("Invalid Groq response: incorrect results array.")
-                print("Raw response:", content)
+                log("Invalid Groq response: incorrect results array.")
+                log("Raw response:", content)
                 continue
             outputs = candidate
             break
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
-            print(f"Could not parse Groq response: {e}")
+            log(f"Could not parse Groq response: {e}")
         except Exception as e:
-            print(f"Groq batch translation error: {e}")
+            log(f"Groq batch translation error: {e}")
 
     if outputs is None:
         return originals
@@ -234,10 +256,10 @@ def translate_batch(items):
     final = []
     for item, original, output in zip(items, originals, outputs):
         if not isinstance(output, str) or not output.strip():
-            print("Invalid output; preserving original value.")
+            log("Invalid output; preserving original value.")
             final.append(original)
-        elif any("؀" <= char <= "ۿ" for char in output):
-            print("Arabic script found in output; preserving original value.")
+        elif ARABIC_SCRIPT.search(output):
+            log("Arabic script found in output; preserving original value.")
             final.append(original)
         else:
             final.append(postprocess_output(item, output))
@@ -302,7 +324,7 @@ def translate(data):
     outputs = translate_batch(items)
     for field, output in zip(active_fields, outputs):
         # no Groq / refused answer: the Arabic comes back unchanged, a job must then stay empty (not Arabic)
-        if field["type"] == "job" and (output == field["text"] or any("؀" <= c <= "ۿ" for c in output)):
+        if field["type"] == "job" and (output == field["text"] or ARABIC_SCRIPT.search(output)):
             continue
         translated[field["target"]] = output
     return translated

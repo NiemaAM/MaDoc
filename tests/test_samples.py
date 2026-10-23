@@ -8,7 +8,7 @@ No model and no network is needed: the NER models are not loaded (rules only) an
 replaced by "keep the Arabic", so the test is deterministic and fast, which is what a CI job needs.
 Every sample in samples/*.txt is checked, drop a new .txt there to add a case.
 
-    pytest tests/test_samples.py
+    python -m pytest tests/test_samples.py
 """
 
 import json

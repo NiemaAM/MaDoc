@@ -16,16 +16,15 @@ text ("رسم ولادة") the parser and the NER models need. --raw keeps the v
 
 import argparse
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
-from common import kraken_command
+from common import resolve_device, run_kraken
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_RECOGNITION = ROOT / "models" / "htr.mlmodel"
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 
 
 def find_image(xml_text, base_dir, override=None):
@@ -41,18 +40,36 @@ def find_image(xml_text, base_dir, override=None):
     raise FileNotFoundError(f"image of the xml not found (tried {[str(c) for c in candidates]}), use --image")
 
 
+def prepare_xml(xml, image_path=None):
+    """PageXML (text, or the Path of an xml file) -> xml text naming its image with a full path.
+
+    kraken reads the image from the xml, so the copy given to kraken names it with its full path (escaped:
+    a path may contain "&" or quotes, which would break the xml).
+    """
+    if isinstance(xml, Path):
+        xml_text, base_dir = xml.read_text(encoding="utf-8"), xml.parent
+    else:
+        xml_text, base_dir = str(xml), Path.cwd()
+    image = find_image(xml_text, base_dir, image_path)
+    return re.sub(r'imageFilename="[^"]*"', lambda m: f"imageFilename={quoteattr(str(image))}", xml_text, count=1)
+
+
+def to_logical_order(texts):
+    """kraken's visual order ("ةدالو مسر") -> normal text ("رسم ولادة"), with python-bidi."""
+    from bidi.algorithm import get_display  # pip install python-bidi
+
+    return [get_display(text) for text in texts]
+
+
 def run_recognition(xml_path, output_txt, model=MODEL_RECOGNITION, device="cpu", pagexml=False):
     """Run the kraken ocr command on the segmentation xml, write the text (or a PageXML) to output_txt."""
-    cmd = [
-        *kraken_command(),
-        "-d", device,
+    run_kraken([
+        "-d", resolve_device(device),
         "-f", "page",           # the input is a PageXML segmentation, the lines come from it
         *(["-x"] if pagexml else []),   # PageXML output: polygons, baselines, text and confidence per line
         "-i", str(xml_path), str(output_txt),
         "ocr", "-m", str(model),
-    ]
-    print("Running:", " ".join(cmd), file=sys.stderr)
-    subprocess.run(cmd, check=True)
+    ], output_txt, "recognition")
 
 
 def recognize_xml(xml, image_path=None, model=MODEL_RECOGNITION, device="cpu", fix_order=True):
@@ -62,22 +79,14 @@ def recognize_xml(xml, image_path=None, model=MODEL_RECOGNITION, device="cpu", f
     python-bidi, which is what the parser needs. fix_order=False returns kraken's raw lines.
     image_path replaces the image named in the xml (when the image moved).
     """
-    if isinstance(xml, Path):
-        xml_text, base_dir = xml.read_text(encoding="utf-8"), xml.parent
-    else:
-        xml_text, base_dir = str(xml), Path.cwd()
-    # kraken reads the image from the xml: it is named with its full path in the copy given to kraken
-    image = find_image(xml_text, base_dir, image_path)
-    xml_text = re.sub(r'imageFilename="[^"]*"', lambda m: f'imageFilename="{image}"', xml_text, count=1)
+    xml_text = prepare_xml(xml, image_path)
     with tempfile.TemporaryDirectory() as folder:
         xml_file, output_txt = Path(folder) / "segmentation.xml", Path(folder) / "text.txt"
         xml_file.write_text(xml_text, encoding="utf-8")
         run_recognition(xml_file, output_txt, model, device)
         lines = [line.strip() for line in output_txt.read_text(encoding="utf-8").splitlines()]
     if fix_order:
-        from bidi.algorithm import get_display  # pip install python-bidi
-
-        lines = [get_display(line) for line in lines]
+        lines = to_logical_order(lines)
     return "\n".join(line for line in lines if line) + "\n"
 
 
@@ -135,12 +144,7 @@ def recognize_lines(xml, image_path=None, model=MODEL_RECOGNITION, device="cpu",
     lines without text are dropped. If kraken's PageXML has no text, the plain text run is used instead and
     the lines keep the polygons of the segmentation (without confidence).
     """
-    if isinstance(xml, Path):
-        xml_text, base_dir = xml.read_text(encoding="utf-8"), xml.parent
-    else:
-        xml_text, base_dir = str(xml), Path.cwd()
-    image = find_image(xml_text, base_dir, image_path)
-    xml_text = re.sub(r'imageFilename="[^"]*"', lambda m: f'imageFilename="{image}"', xml_text, count=1)
+    xml_text = prepare_xml(xml, image_path)
     with tempfile.TemporaryDirectory() as folder:
         xml_file, output = Path(folder) / "segmentation.xml", Path(folder) / "recognized.xml"
         xml_file.write_text(xml_text, encoding="utf-8")
@@ -152,14 +156,14 @@ def recognize_lines(xml, image_path=None, model=MODEL_RECOGNITION, device="cpu",
             text_file = Path(folder) / "text.txt"
             run_recognition(xml_file, text_file, model, device)
             texts = text_file.read_text(encoding="utf-8").splitlines()
-            lines = [{**seg, "text": text.strip()} for seg, text in zip(segmented, texts)] if len(texts) == len(
-                segmented) else [{"id": f"line_{i}", "text": t.strip(), "confidence": None, "polygon": [],
-                                  "baseline": []} for i, t in enumerate(texts, 1)]
+            if len(texts) == len(segmented):
+                lines = [{**seg, "text": text.strip()} for seg, text in zip(segmented, texts)]
+            else:  # the lines cannot be paired with their polygons: text only
+                lines = [{"id": f"line_{i}", "text": text.strip(), "confidence": None, "polygon": [], "baseline": []}
+                         for i, text in enumerate(texts, 1)]
     if fix_order:
-        from bidi.algorithm import get_display  # pip install python-bidi
-
-        for line in lines:
-            line["text"] = get_display(line["text"])
+        for line, text in zip(lines, to_logical_order([line["text"] for line in lines])):
+            line["text"] = text
     return [line for line in lines if line["text"]]
 
 

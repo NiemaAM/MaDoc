@@ -51,6 +51,21 @@ def get_number_keys():
     return keys
 
 
+_shapes = {}
+
+
+def key_shape(keys):
+    """(first words, longest key in words) of a number / month table, computed once per table.
+
+    The tables are built once (lru_cache) and never modified, so the result is kept by table identity.
+    """
+    cached = _shapes.get(id(keys))
+    if cached is None or cached[0] is not keys:
+        shape = (frozenset(key.split()[0] for key in keys), max((len(key.split()) for key in keys), default=0))
+        cached = _shapes[id(keys)] = (keys, shape)
+    return cached[1]
+
+
 def spaceless(phrase):
     """Key used to match a time phrase with the dictionary: normalised, without spaces ("واحد و عشرين" = "واحد وعشرين")."""
     return ar_key(phrase).replace(" ", "")
@@ -89,8 +104,7 @@ def phrase_to_number(phrase, number_keys):
     tokens = ar_key(phrase).split()
     if not tokens or not number_keys:
         return None
-    first_tokens = {key.split()[0] for key in number_keys}
-    max_len = max(len(key.split()) for key in number_keys)
+    first_tokens, max_len = key_shape(number_keys)
     # split the glued conjunction: "وأربعمائة" -> "و" + "اربعمائة"
     expanded = []
     for token in tokens:
@@ -126,7 +140,7 @@ def phrase_to_number(phrase, number_keys):
 
 
 # dates builder for converter
-def replace_aliases(value, aliases=None):
+def replace_aliases(value):
     """Convert a written date into numeric day, month, and year."""
     if not value:
         return value
@@ -136,7 +150,7 @@ def replace_aliases(value, aliases=None):
     if not month_keys:
         return result
     tokens = ar_key(result).split()
-    max_len = max(len(key.split()) for key in month_keys)
+    max_len = key_shape(month_keys)[1]
     # find every month alias in the phrase
     matches = []
     for i in range(len(tokens)):

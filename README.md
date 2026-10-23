@@ -34,14 +34,15 @@ pip install -r requirements.txt
 Do not rename or move the project folder after creating the `.venv`: the launchers inside it (`kraken.exe`,
 `pip.exe` ...) store absolute paths. If you did, delete `.venv` and create it again.
 
-### What is not in the repository
+### Models, dictionaries and API key
 
-| What | Where to put it |
+| What | Where |
 |---|---|
 | kraken segmentation model | `models/blla.mlmodel` |
 | kraken recognition (HTR) model | `models/htr.mlmodel` |
 | dictionaries `date_time.json`, `jobs.json`, `nationalities.json`, `cities.json` (and optionally `places.json`) | `dictionaries/` (or the folder in `BIRTH_DICT_DIR`) |
-| Groq API key | `GROQ_API_KEY` in the environment or in a `.env` file |
+| Groq API key (not in the repository) | `GROQ_API_KEY` in the environment or in a `.env` file |
+| Groq model (optional, default `openai/gpt-oss-120b`) | `GROQ_MODEL` in the environment or in `.env` |
 
 The NER models are downloaded the first time they are used (`TypicaAI/MagBERT-NER-AR` from Hugging Face; the French
 model `TypicaAI/MagBERT-NER-Fr` is called through `gradio_client`). Without a Groq key the translation stage
@@ -54,11 +55,15 @@ is skipped and the original Arabic values are kept.
 ```bash
 python src/app.py                 # http://127.0.0.1:7860
 python src/app.py --device cuda:0 --share
+python src/app.py --segmentation-model other/blla.mlmodel --recognition-model other/htr.mlmodel
 ```
 
 Upload a scan and press Transcribe. The page shows the image with the detected lines as polygons (with the
 confidence score of each line, in the style of eScriptorium), the transcription, and the JSON record with its
-validation report.
+validation report. Phone photos are turned upright from their EXIF orientation before segmentation.
+
+The kraken device and models are set on the command line only, never from the page. Uploaded scans and the
+files of each run are deleted after one hour.
 
 ### Command line
 
@@ -103,13 +108,14 @@ A record is valid when it has no error.
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-python -m pytest src/test.py
+pip install -r requirements-ci.txt     # light: no torch, transformers or kraken
+python -m pytest -q
 ```
 
 The tests run the whole offline chain (no kraken models, no NER models, no network): the sample texts are
-parsed, converted, mapped and validated, kraken and Groq are replaced by stand-ins. The same command runs in
-GitHub Actions (`.github/workflows/tests.yml`) on Python 3.10 and 3.12.
+parsed, converted, mapped and validated, kraken and Groq are replaced by stand-ins
+(`tests/test_samples.py`, `tests/test_units.py`). The same command runs in GitHub Actions
+(`.github/workflows/tests.yml`) on Python 3.10 and 3.12. The app tests run only when gradio is installed.
 
 ## Repository layout
 
@@ -117,6 +123,6 @@ GitHub Actions (`.github/workflows/tests.yml`) on Python 3.10 and 3.12.
 src/                 the pipeline stages and the web interface
 dictionaries/        date_time.json, jobs.json, nationalities.json, cities.json ...
 samples/             anonymized testing samples
-models/              kraken models (not committed)
+models/              kraken models
 tests/               pytest suite
 ```

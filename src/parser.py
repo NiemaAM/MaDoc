@@ -39,7 +39,7 @@ from common import (
     extract_any,
     get_jobs_lookup,
     get_nationality_lookup,
-    get_places_lookup,
+    get_place_first_words,
     normalize_text,
     read_json_file,
     read_text_file,
@@ -68,27 +68,11 @@ MOTHER_MARK = r"و\s*والدت\s*(?:ه|ها)"
 PUNCT_TO_SPACE = {":", "،", "؛", "٪", "﹕", "："}
 
 
-def clean_text(txt):
-    """Make the raw text predictable: digits, invisible chars, punctuation, spaces."""
-    txt = str(txt).translate(DIGIT_MAP)
-    txt = INVISIBLE_CHARS.sub("", txt)
-    txt = ARABIC_DIACRITICS.sub("", txt)
-    txt = txt.replace("\r\n", "\n").replace("\r", "\n")
-    # ":" , arabic comma/semicolon and the arabic percent sign (used as a full stop by some scans)
-    for char in PUNCT_TO_SPACE:
-        txt = txt.replace(char, " ")
-    txt = txt.replace(".", "")
-    txt = txt.replace(" ", " ")
-    txt = re.sub(r"[ \t]+", " ", txt)
-    txt = re.sub(r"\s*\n\s*", "\n", txt)
-    txt = re.sub(r"\n+", "\n", txt).strip()
-    return txt
-
-
 def flatten(raw):
-    """clean_text() + single spaces, and for every kept character its index in the raw text.
+    """Cleaned text on one line, and for every kept character its index in the raw text.
 
-    flatten(raw)[0] == normalize_text(clean_text(raw)). The indexes let the NER offsets (which are
+    Cleaning: Arabic-Indic digits -> ASCII, invisible characters, diacritics and "." removed, ":" "،" "؛" "٪"
+    and every run of whitespace (new lines too) -> one space. The indexes let the NER offsets (which are
     positions in the raw text) be moved to the cleaned text the rules work on.
     """
     chars, index = [], []
@@ -171,7 +155,7 @@ def strip_attached_b(place):
     if not place:
         return place
     first, _, rest = place.partition(" ")
-    firsts = {key.split()[0] for key in get_places_lookup()}
+    firsts = get_place_first_words()
     if (
         len(first) > 1 and first.startswith("ب")
         and ar_key(first) not in firsts and ar_key(first[1:]) in firsts
