@@ -1,7 +1,7 @@
 """pipeline.py - runs the whole chain on one scan, one PageXML or one text file.
 
-    segmentation > recognition > classificator > parser > converter > mapper > translator > validator
-    image -> xml     xml -> txt     txt -> NER json -> record
+    segmentation > recognition > [spelling checker] > classificator > parser > converter > mapper > translator > validator
+    image -> xml     xml -> txt     txt -> txt           txt -> NER json -> record
 
 The input decides where the chain starts: an image (.jpg .png .tif ...) runs everything, a PageXML
 (.xml, from segmentation.py) starts at recognition, a .txt starts at the classificator.
@@ -12,9 +12,10 @@ The input decides where the chain starts: an image (.jpg .png .tif ...) runs eve
     python src/pipeline.py samples/6.txt -o result.json --report report.json --save-stages out/
     python src/pipeline.py samples/6.txt --no-ner            # rules only, no model is loaded
     python src/pipeline.py samples/6.txt --ner ner.json      # reuse a saved classificator output
+    python src/pipeline.py scan.jpg --spellcheck              # HTR spelling fixes by a local model (Ollama)
 
 The record goes to stdout (or -o), the validation report and the NER notes go to stderr.
---save-stages DIR writes the output of every stage (0a_segmentation.xml, 0b_text.txt, 1_ner.json ...
+--save-stages DIR writes the output of every stage (0a_segmentation.xml, 0b_text.txt, 0c_spellchecked.txt, 1_ner.json ...
 5_translated.json, 6_report.json), which is the easiest way to see which stage changed what.
 The recognized text is the normal Arabic text (kraken's visual order is converted back), as the parser expects.
 """
@@ -27,6 +28,7 @@ from classificator import classify
 from common import read_json_file, read_text_file, resolve_device, write_json
 from recognition import MODEL_RECOGNITION, recognize_xml
 from segmentation import MODEL_SEGMENTATION, segment_image
+from spelling_checker import correct_text
 from converter import convert
 from mapper import map_fields
 from parser import parse_with_notes
@@ -112,6 +114,8 @@ def main():
     parser.add_argument("--recognition-model", type=Path, default=MODEL_RECOGNITION, help="kraken HTR model")
     parser.add_argument("--device", default="cpu", help="kraken device: cpu, cuda:0 ...")
     parser.add_argument("--strict", action="store_true", help="exit with code 1 when the report has errors")
+    parser.add_argument("--spellcheck", action="store_true",
+                        help="correct the HTR spelling mistakes with a local model (Ollama, nothing leaves the computer)")
     args = parser.parse_args()
 
     if not args.input_file.is_file():
@@ -124,6 +128,16 @@ def main():
         args.input_file, args.image, args.save_stages, resolve_device(args.device),
         args.segmentation_model, args.recognition_model,
     )
+    # 0c. spelling checker (optional): only known words replace misspelt words, names are never touched
+    if args.spellcheck:
+        if args.ner:
+            print("Warning: --ner was computed on the uncorrected text, its offsets may not match", file=sys.stderr)
+        raw_text, spelling_notes = correct_text(raw_text)
+        for note in spelling_notes:
+            print(f"[spelling] {note}", file=sys.stderr)
+        if args.save_stages:
+            Path(args.save_stages).mkdir(parents=True, exist_ok=True)
+            (Path(args.save_stages) / "0c_spellchecked.txt").write_text(raw_text, encoding="utf-8")
     record, report, notes = run_pipeline(
         raw_text,
         ner=read_json_file(args.ner) if args.ner else None,

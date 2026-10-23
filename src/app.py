@@ -8,7 +8,12 @@ score) next to the transcription, line by line. Hovering a line in the list high
 scan and the other way round (CSS only). The lines under the confidence threshold are flagged.
 
 Tabs: Transcription (editable txt, "parse again" re-runs the parser on the corrected text), JSON record,
-validation report + parser notes, downloads (json, txt, PageXML of the segmentation).
+validation report + spelling and parser notes, downloads (json, txt, PageXML of the segmentation).
+The optional spelling correction runs a local model (Ollama, see spelling_checker.py). The "Spelling" tab shows
+the text with every proposed change highlighted (green = applied, red = not applied, the badge is the proposed
+spelling): click a change to accept / refuse it, then "Apply". A misread job close to several jobs of jobs.json
+cycles through them at every click (refused -> first job -> second job ... -> refused). The changes the rules of spelling_checker.py
+accept are applied at first; the transcription tab shows the corrected text, "Image and lines" what the HTR read.
 The models are loaded the first time they are used and then kept by the running app.
 
 The kraken device and models are chosen on the command line only (not in the page: a shared app must not let
@@ -34,6 +39,7 @@ from common import resolve_device, write_json
 from pipeline import run_pipeline
 from recognition import MODEL_RECOGNITION, recognize_lines
 from segmentation import MODEL_SEGMENTATION, segment_image
+from spelling_checker import MODEL as SPELL_MODEL, apply_changes, describe, line_units, propose
 from validator import format_report
 
 DISPLAY_MAX_SIDE = 1800   # the scan is shown at most this wide (polygons keep the original coordinates)
@@ -185,8 +191,140 @@ def save_files(folder, record, text, xml):
     return paths
 
 
+ACCEPTED_COLOR, REFUSED_COLOR = "#16a34a", "#dc2626"
+NO_SPELLING = {"text": "", "changes": [], "accepted": [], "selected": {}, "segments": []}
+
+
+def resolved(state):
+    """The changes with, for a change that has several options (jobs), the option chosen in the tab."""
+    selected = state.get("selected") or {}
+    out = []
+    for i, change in enumerate(state["changes"]):
+        options = change.get("options")
+        if options:
+            change = {**change, "new": options[selected.get(i, 0) % len(options)]}
+        out.append(change)
+    return out
+
+
+def isolate(text):
+    """Arabic inside an English sentence, isolated (Unicode FSI ... PDI): without it the browser shows
+    "صباخ → صباغ" in the wrong order around the arrow."""
+    return "\u2068" + text + "\u2069"
+
+
+def spelling_review(state):
+    """Spelling state -> (HighlightedText with every proposed change, details in Markdown, state with the
+    index of the change behind every highlighted piece)."""
+    changes, accepted = resolved(state), set(state["accepted"])
+    if not state["text"]:
+        return gr.HighlightedText(value=[]), "Tick \"Spelling correction\" in the options, then Transcribe.", state
+    by_position = {(c["line"], c["start"]): i for i, c in enumerate(changes) if c["old"]}
+    pieces, segments, color_map = [], [], {}
+    for line_index, line in enumerate(state["text"].split("\n")):
+        # the line is shown exactly as written; only the words of a change are highlighted
+        units, written = line_units(line), 0
+        for position, unit in enumerate(units):
+            index = by_position.get((line_index, position))
+            if index is None:
+                continue
+            change = changes[index]
+            begin, finish = unit["begin"], units[change["end"] - 1]["finish"]
+            if begin > written:
+                pieces.append((line[written:begin], None))
+                segments.append(None)
+            proposal = " ".join(change["new"]) or "(removed)"
+            label = ("✓ " if index in accepted else "✗ ") + proposal
+            color_map[label] = ACCEPTED_COLOR if index in accepted else REFUSED_COLOR
+            pieces.append((line[begin:finish], label))
+            segments.append(index)
+            written = finish
+        pieces.append((line[written:] + "\n", None))
+        segments.append(None)
+    shown = [c for c in changes if c["old"]]
+    if not shown:
+        details = "The model proposed no change."
+    else:
+        rows = []
+        for i, change in enumerate(changes):
+            if not change["old"]:
+                continue
+            mark = "✓" if i in accepted else "✗"
+            if change.get("options") and len(change["options"]) > 1:
+                rule = ("from jobs.json, several jobs possible: " + " / ".join(isolate(" ".join(o)) for o in change["options"])
+                        + " (click again for the next one)")
+            elif change.get("source") == "jobs.json":
+                rule = "from jobs.json" + (", " + change["context"] if change.get("context") else "") + (
+                    "" if change["accepted"] else f"; refused by the rules: {change['reason']}")
+            elif change["accepted"]:
+                rule = "accepted by the rules"
+            else:
+                rule = f"refused by the rules: {change['reason']}"
+            rows.append(f"- {mark} line {change['line'] + 1}: **{isolate(' '.join(change['old']))}** → "
+                        f"**{isolate(' '.join(change['new']) or '(removed)')}** ({rule})")
+        details = (f"{len(accepted)} of {len(shown)} changes applied. Click a highlighted word to accept / refuse "
+                   "it, then press Apply.\n\n" + "\n".join(rows))
+    state = {**state, "segments": segments}
+    return gr.HighlightedText(value=pieces, color_map=color_map), details, state
+
+
+def spelling_notes(state):
+    """The changes with the decision taken (by the rules, or by the person in the Spelling tab)."""
+    accepted, notes = set(state["accepted"]), []
+    for i, change in enumerate(resolved(state)):
+        chosen = i in accepted
+        if chosen == change["accepted"]:
+            notes.append(describe(change))
+        elif chosen:   # accepted by the person although the rules refused it
+            notes.append(describe({**change, "accepted": True})
+                         + f" (accepted in the Spelling tab; the rules refused it: {change['reason']})")
+        else:
+            notes.append(describe({**change, "accepted": False, "reason": "refused in the Spelling tab"}))
+    return "\n".join(f"[spelling] {note}" for note in notes) + "\n\n" if notes else ""
+
+
+def toggle_change(state, evt: gr.SelectData):
+    """A click on a highlighted change accepts / refuses it. A change with several options (a misread job close
+    to two jobs) goes: refused -> first option -> second option ... -> refused."""
+    segments = state.get("segments") or []
+    index = segments[evt.index] if isinstance(evt.index, int) and evt.index < len(segments) else None
+    if index is not None:
+        accepted, selected = set(state["accepted"]), dict(state.get("selected") or {})
+        options = state["changes"][index].get("options") or [state["changes"][index]["new"]]
+        if index not in accepted:
+            accepted.add(index)
+            selected[index] = 0
+        elif selected.get(index, 0) + 1 < len(options):
+            selected[index] = selected.get(index, 0) + 1
+        else:
+            accepted.discard(index)
+            selected[index] = 0
+        state = {**state, "accepted": sorted(accepted), "selected": selected}
+    return spelling_review(state)
+
+
+def set_all(state, accept):
+    """accept=True: back to the choice of the rules; False: refuse every change.
+
+    There is no "accept all": it would also accept the changes the rules refused (removed words, names, Latin
+    text invented by the model); those are accepted one by one, by clicking them.
+    """
+    accepted = [i for i, c in enumerate(state["changes"]) if c["accepted"]] if accept else []
+    return spelling_review({**state, "accepted": accepted, "selected": {}})
+
+
+def apply_spelling(state, use_ner, use_translation):
+    """The HTR text with the accepted changes -> transcription, record, report and downloads again."""
+    if not state["text"]:
+        raise gr.Error("No spelling check to apply: tick \"Spelling correction\" in the options and transcribe.")
+    text = apply_changes(state["text"], resolved(state), set(state["accepted"]))
+    record, report_text, notes_text = run_record(text, use_ner, use_translation)
+    report = report_text + "\n\n" + spelling_notes(state) + notes_text
+    return text, record, report, save_files(new_run_folder(), record, text, "")
+
+
 def process(image_path, use_ner, use_translation, threshold, device, segmentation_model, recognition_model,
-            progress=gr.Progress()):
+            progress=gr.Progress(), use_spellcheck=False):
     """Scan -> segmentation -> recognition -> pipeline. Returns what the interface shows."""
     if not image_path:
         raise gr.Error("Upload a scan first.")
@@ -199,11 +337,24 @@ def process(image_path, use_ner, use_translation, threshold, device, segmentatio
     if not lines:
         raise gr.Error("No text line was recognized on this image.")
     text = transcription(lines)
+    spelling = dict(NO_SPELLING)
+    spelling_text = ""
+    if use_spellcheck:
+        # local model only (Ollama): the changes the rules accept are applied, the Spelling tab shows them all
+        progress(0.6, desc=f"Spelling check (local model {SPELL_MODEL})")
+        changes, skipped = propose(text)
+        spelling = {"text": text, "changes": changes, "selected": {},
+                    "accepted": [i for i, c in enumerate(changes) if c["accepted"]], "segments": []}
+        text = apply_changes(text, changes)
+        # without the model (Ollama not running ...), the jobs are still checked against jobs.json
+        spelling_text = "".join(f"[spelling] {note}\n" for note in skipped) + spelling_notes(spelling)
     progress(0.8, desc="Parsing, mapping, translation, validation")
     record, report_text, notes_text = run_record(text, use_ner, use_translation)
+    notes_text = spelling_text + notes_text
     files = save_files(folder, record, text, xml)
+    review, details, spelling = spelling_review(spelling)
     return (render_view(image_path, lines, threshold), text, record, report_text + "\n\n" + notes_text,
-            files, lines, image_path)
+            files, lines, image_path, review, details, spelling)
 
 
 def reparse(text, use_ner, use_translation):
@@ -227,14 +378,14 @@ def make(component, **kwargs):
 
 
 def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_model=MODEL_RECOGNITION):
-    def transcribe(image_path, use_ner, use_translation, threshold, progress=gr.Progress()):
+    def transcribe(image_path, use_ner, use_translation, use_spellcheck, threshold, progress=gr.Progress()):
         return process(image_path, use_ner, use_translation, threshold, device, segmentation_model,
-                       recognition_model, progress)
+                       recognition_model, progress, use_spellcheck)
 
     # delete_cache: gradio's copy of every upload / download is removed after KEEP_SECONDS
     with make(gr.Blocks, title="MaDoc", delete_cache=(KEEP_SECONDS, KEEP_SECONDS)) as app:
         gr.Markdown("## MaDoc: Birth certificates transcription and structuring")
-        lines_state, image_state = gr.State([]), gr.State("")
+        lines_state, image_state, spelling_state = gr.State([]), gr.State(""), gr.State(dict(NO_SPELLING))
         with gr.Row():
             with gr.Column(scale=1, min_width=260):
                 image = make(gr.Image, type="filepath", label="Scan", sources=["upload", "clipboard"], height=300)
@@ -242,6 +393,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 with gr.Accordion("Options", open=False):
                     use_ner = gr.Checkbox(True, label="NER models as a second extractor")
                     use_translation = gr.Checkbox(True, label="Groq translation (needs GROQ_API_KEY)")
+                    use_spellcheck = gr.Checkbox(False, label=f"Spelling correction, local model ({SPELL_MODEL}, needs Ollama)")
                     threshold = gr.Slider(0.3, 0.99, value=0.8, step=0.01, label="Confidence threshold (flag lines under)")
             with gr.Column(scale=3):
                 with gr.Tabs():
@@ -251,6 +403,16 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                         text_box = make(gr.Textbox, label="Transcription (editable)", lines=22, interactive=True,
                                         show_copy_button=True, rtl=True)
                         again = gr.Button("Parse the corrected text again")
+                    with gr.Tab("Spelling"):
+                        spelling_view = make(gr.HighlightedText, label="Proposed spelling corrections", rtl=True,
+                                             show_legend=False, show_inline_category=True, combine_adjacent=False,
+                                             interactive=False)
+                        with gr.Row():
+                            accept_all = gr.Button("Back to the rules' choice")
+                            refuse_all = gr.Button("Refuse all")
+                            apply_button = gr.Button("Apply and parse again", variant="primary")
+                        spelling_details = gr.Markdown("Tick \"Spelling correction\" in the options, then Transcribe.",
+                                                       rtl=False)
                     with gr.Tab("JSON record"):
                         json_out = gr.JSON(label="Record")
                     with gr.Tab("Validation"):
@@ -259,9 +421,16 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                         files = make(gr.File, label="record.json · transcription.txt · segmentation.xml", file_count="multiple")
         run.click(
             transcribe,
-            [image, use_ner, use_translation, threshold],
-            [view, text_box, json_out, report_box, files, lines_state, image_state],
+            [image, use_ner, use_translation, use_spellcheck, threshold],
+            [view, text_box, json_out, report_box, files, lines_state, image_state,
+             spelling_view, spelling_details, spelling_state],
         )
+        review_outputs = [spelling_view, spelling_details, spelling_state]
+        spelling_view.select(toggle_change, [spelling_state], review_outputs)
+        accept_all.click(lambda state: set_all(state, True), [spelling_state], review_outputs)
+        refuse_all.click(lambda state: set_all(state, False), [spelling_state], review_outputs)
+        apply_button.click(apply_spelling, [spelling_state, use_ner, use_translation],
+                           [text_box, json_out, report_box, files])
         again.click(reparse, [text_box, use_ner, use_translation], [json_out, report_box, files])
         threshold.release(rerender, [image_state, lines_state, threshold], [view])
     return app
