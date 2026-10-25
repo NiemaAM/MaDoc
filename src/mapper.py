@@ -4,7 +4,7 @@
 
 A value is looked up exactly (after normalisation), then with typo tolerance (see common.fuzzy_lookup).
 A value that is not in the dictionaries is left empty (the validator reports it as a warning).
-A profession that is not found stays empty here: the translator stage asks Groq for it.
+A profession that is not found stays empty here: the translator stage asks the local model for it.
 """
 
 import argparse
@@ -42,7 +42,7 @@ def map_fields(data):
             french_job = fuzzy_lookup(ar_key(arabic_job), jobs_lookup)
             if french_job:
                 mapped[french_field] = french_job
-            # not found: stays empty, translator.py asks Groq for it
+            # not found: stays empty, translator.py asks the local model for it
     # 2. Map Arabic nationalities to French using nationalities.json
     nationality_fields = [
         ("NATIONALITE", "NATIONALITEFR"),

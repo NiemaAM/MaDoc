@@ -7,7 +7,7 @@ Report:
      "issues": [{"level": "error" | "warning", "field": "...", "message": "..."}]}
 
 "error"   = the record is wrong, "warning" = suspicious, to be reviewed.
---no-translation (check_translation=False) skips the checks that need the Groq stage.
+--no-translation (check_translation=False) skips the checks that need the translation stage.
 Exit code of the command line: 1 when there is at least one error.
 """
 

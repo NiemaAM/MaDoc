@@ -63,8 +63,13 @@ def text_from_source(path, image=None, save_dir=None, device="cpu",
     return text
 
 
-def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_dir=None):
-    """raw text -> (record, validation report, notes). `ner` skips the models with a saved JSON."""
+def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_dir=None, use_french_ner=True,
+                 stages=None):
+    """raw text -> (record, validation report, notes). `ner` skips the models with a saved JSON.
+
+    use_french_ner=False runs only the Arabic NER model (both run on this computer, see classificator.py).
+    stages: a dict that receives the output of every stage ("ner", "parsed", "converted", "mapped").
+    """
     save_dir = Path(save_dir) if save_dir else None
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +80,7 @@ def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_di
 
     # 1. classificator: NER entities
     if ner is None and use_ner:
-        ner = classify(raw_text)
+        ner = classify(raw_text, use_french=use_french_ner)
         for error in ner.get("errors", []):
             print(f"Warning: NER unavailable, rules only for it ({error})", file=sys.stderr)
     if ner is not None:
@@ -83,13 +88,15 @@ def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_di
     # 2. parser: rules + NER entities
     parsed, notes = parse_with_notes(raw_text, ner)
     save("2_parsed.json", parsed)
+    if stages is not None:
+        stages.update({"ner": ner, "parsed": parsed})
     # 3. converter: dates, time, sex
     converted = convert(parsed)
     save("3_converted.json", converted)
     # 4. mapper: jobs, nationalities
     mapped = map_fields(converted)
     save("4_mapped.json", mapped)
-    # 5. translator: names and places (Groq)
+    # 5. translator: names and places (local model, Ollama)
     translated = translate(mapped) if use_translation else mapped
     save("5_translated.json", translated)
     # 6. validator: report
@@ -108,7 +115,7 @@ def main():
     parser.add_argument("--save-stages", type=Path, metavar="DIR", help="write the JSON of every stage in DIR")
     parser.add_argument("--ner", type=Path, help="use this classificator JSON instead of running the models")
     parser.add_argument("--no-ner", action="store_true", help="do not run the NER models (rules only)")
-    parser.add_argument("--no-translation", action="store_true", help="skip the Groq translation stage")
+    parser.add_argument("--no-translation", action="store_true", help="skip the translation stage (local model)")
     parser.add_argument("--image", type=Path, help="the scan of a .xml input, if it is not where the xml says")
     parser.add_argument("--segmentation-model", type=Path, default=MODEL_SEGMENTATION, help="kraken blla model")
     parser.add_argument("--recognition-model", type=Path, default=MODEL_RECOGNITION, help="kraken HTR model")

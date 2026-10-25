@@ -1,4 +1,4 @@
-# what the tests need: no torch / transformers / kraken / groq key (the models are never loaded)
+# what the tests need: no torch / transformers / kraken (the models are never loaded)
 pytest>=8.0.0
 python-dotenv>=1.0.0
 python-bidi

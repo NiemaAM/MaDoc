@@ -2,12 +2,15 @@
 
     python src/translator.py mapped.json [-o translated.json]
 
-One Groq request translates every name / address / employee of the record, and the professions that
-the dictionary (mapper.py) did not find. Official place names come
-from cities.json / places.json and the child's French family name is sent with the request, so the
-model cannot choose another spelling. Without GROQ_API_KEY (or the groq package) the original Arabic
-values are kept, the validator then reports the French fields as untranslated.
-GROQ_MODEL (environment or .env) chooses another Groq model. Messages go to stderr, never to stdout.
+One request to the local model (Ollama, qwen2.5:7b by default, the same server as the spelling checker)
+translates every name / address / employee of the record, and the professions that the dictionary (mapper.py)
+did not find. Nothing is sent online: the Ollama address must be this computer, as for the spelling checker
+(MADOC_OLLAMA_URL, MADOC_SPELL_ALLOW_REMOTE). Official place names come from cities.json / places.json and
+the child's French family name is sent with the request, so the model cannot choose another spelling.
+When Ollama is not running or the model is not pulled, the original Arabic values are kept, the validator then
+reports the French fields as untranslated.
+MADOC_TRANSLATE_MODEL (environment or .env) chooses another Ollama model (default: MADOC_SPELL_MODEL).
+Messages go to stderr, never to stdout.
 """
 
 import argparse
@@ -17,6 +20,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 from functools import lru_cache
 from pathlib import Path
 
@@ -30,11 +34,14 @@ from common import (
     write_json,
 )
 
-# load Groq API Key
 load_dotenv()
 
-# Groq model (GROQ_MODEL in the environment / .env replaces it)
-MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+import spelling_checker  # noqa: E402  (after load_dotenv: it reads MADOC_OLLAMA_URL / MADOC_SPELL_MODEL)
+
+# Ollama model of the translation (MADOC_TRANSLATE_MODEL in the environment / .env replaces it)
+MODEL = os.environ.get("MADOC_TRANSLATE_MODEL") or spelling_checker.MODEL
+# seconds to wait for "is Ollama running": the answer is immediate when it is
+CHECK_TIMEOUT = 3
 # Arabic script block: a French value must not contain any of it
 ARABIC_SCRIPT = re.compile("[\u0600-\u06ff]")
 
@@ -44,27 +51,27 @@ def log(*args):
     print(*args, file=sys.stderr)
 
 
-_client = None
-_client_checked = False
+def unavailable_reason():
+    """None when the local model can be used, otherwise why not (Ollama not running, model not pulled ...).
 
-
-def get_client():
-    """Groq client, or None when the package or the key is missing (stages 1-4 still work)."""
-    global _client, _client_checked
-    if not _client_checked:
-        _client_checked = True
-        api_key = os.environ.get("GROQ_API_KEY")
-        try:
-            from groq import Groq
-            _client = Groq(api_key=api_key) if api_key else None
-        except ImportError:
-            _client = None
-    return _client
+    Asked again at every record: Ollama may be started while the web interface is running."""
+    try:
+        url = spelling_checker.ollama_url("/api/tags")
+        with urllib.request.urlopen(url, timeout=CHECK_TIMEOUT) as response:
+            models = json.loads(response.read().decode("utf-8")).get("models") or []
+    except PermissionError as e:
+        return str(e)
+    except Exception as e:
+        return f"Ollama not reachable at {spelling_checker.OLLAMA_URL} ({e})"
+    names = {m.get("name") for m in models} | {m.get("model") for m in models}
+    if MODEL not in names and f"{MODEL}:latest" not in names:
+        return f"the model {MODEL} is not pulled (ollama pull {MODEL})"
+    return None
 
 
 def is_available():
-    """True when translate() can really call Groq."""
-    return get_client() is not None
+    """True when translate() can really call the local model."""
+    return unavailable_reason() is None
 
 
 @lru_cache(maxsize=None)
@@ -131,19 +138,39 @@ def postprocess_output(item, output):
     return text
 
 
-# API call function (1 request)
+def answer_results(answer, count):
+    """The model's {"results": [...]} -> exactly count strings (None for a missing one), or None.
+
+    The items are numbered: an answer of {"id", "text"} objects is matched by id, a plain list of strings by
+    position when the count is right."""
+    results = answer.get("results") if isinstance(answer, dict) else None
+    if not isinstance(results, list):
+        return None
+    if results and all(isinstance(r, dict) for r in results):
+        by_id = {}
+        for r in results:
+            try:
+                by_id.setdefault(int(r.get("id")), r.get("text"))
+            except (TypeError, ValueError):
+                continue
+        found = [by_id.get(n) for n in range(1, count + 1)]
+        return found if any(isinstance(f, str) for f in found) else None
+    return results if len(results) == count else None
+
+
+# local model call (1 request)
 def translate_batch(items):
     """Translate/transliterate Moroccan civil registry names, addresses,
-    and employee information in one Groq request."""
+    and employee information in one request to the local model."""
 
     if not items:
         return []
 
     originals = [item["text"] for item in items]
 
-    client = get_client()
-    if client is None:
-        log("Groq client unavailable (missing groq package or GROQ_API_KEY); keeping original values.")
+    reason = unavailable_reason()
+    if reason:
+        log(f"Translation model unavailable: {reason}; keeping original values.")
         return originals
 
     prompt = """
@@ -201,53 +228,32 @@ def translate_batch(items):
     - The employee's job position must always be rendered exactly as: "FONCTIONAIRE ET OFFECIER DETAT CIVIL".
 
     OUTPUT:
+    - The input is {"items": [{"id": 1, "type": ..., "text": ...}, ...]}.
     - Return ONLY a valid JSON object in this exact format:
-    {"results": ["result 1", "result 2"]}
-    - The "results" array must have exactly as many strings as the input items.
+    {"results": [{"id": 1, "text": "result 1"}, {"id": 2, "text": "result 2"}]}
+    - One result per input item, with the same "id".
     - Do not include explanations or Markdown.
     """
+    payload = {"items": [dict(item, id=n) for n, item in enumerate(items, 1)]}
 
     outputs = None
-    # one retry: transient API / formatting failures are common
+    # one retry: a small model sometimes answers a malformed JSON
     for attempt in range(2):
         if attempt:
-            time.sleep(2)  # give a rate limit / overloaded server a moment before the retry
+            time.sleep(1)
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": json.dumps(items, ensure_ascii=False),
-                    },
-                ],
-                temperature=0,
-                reasoning_effort="low",
-                max_completion_tokens=2048,
-                response_format={"type": "json_object"},
-            )
-            choice = response.choices[0]
-            content = choice.message.content
-            if not content or not content.strip():
-                log("Groq returned no text.")
-                log("Finish reason:", choice.finish_reason)
-                log("Usage:", response.usage)
-                continue
-            # tolerate Markdown fences around the JSON
-            content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.M).strip()
-            result = json.loads(content)
-            candidate = result.get("results")
-            if not isinstance(candidate, list) or len(candidate) != len(items):
-                log("Invalid Groq response: incorrect results array.")
-                log("Raw response:", content)
+            answer = spelling_checker.ollama_json(prompt, payload, MODEL)
+            candidate = answer_results(answer, len(items))
+            if candidate is None:
+                log("Invalid model response: incorrect results array.")
+                log("Raw response:", json.dumps(answer, ensure_ascii=False)[:500])
                 continue
             outputs = candidate
             break
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
-            log(f"Could not parse Groq response: {e}")
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError) as e:
+            log(f"Could not parse the model response: {e}")
         except Exception as e:
-            log(f"Groq batch translation error: {e}")
+            log(f"Translation model error: {e}")
 
     if outputs is None:
         return originals
@@ -266,7 +272,7 @@ def translate_batch(items):
     return final
 
 
-# 4. translate names and addreses to French using graq API
+# 4. translate names and addresses to French with the local model
 def translate(data):
     """Populate French fields for names, addresses, and employee information."""
     translated = copy.deepcopy(data)
@@ -323,7 +329,7 @@ def translate(data):
         items.append(item)
     outputs = translate_batch(items)
     for field, output in zip(active_fields, outputs):
-        # no Groq / refused answer: the Arabic comes back unchanged, a job must then stay empty (not Arabic)
+        # no model / refused answer: the Arabic comes back unchanged, a job must then stay empty (not Arabic)
         if field["type"] == "job" and (output == field["text"] or ARABIC_SCRIPT.search(output)):
             continue
         translated[field["target"]] = output
@@ -331,7 +337,7 @@ def translate(data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Translate the names, birth place and employee to French (Groq).")
+    parser = argparse.ArgumentParser(description="Translate the names, birth place and employee to French (local Ollama model).")
     parser.add_argument("input_file", type=Path, help="JSON written by mapper.py")
     parser.add_argument("-o", "--output", type=Path, help="write the JSON here instead of stdout")
     args = parser.parse_args()
