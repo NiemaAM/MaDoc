@@ -191,7 +191,7 @@ def save_files(folder, record, text, xml):
     return paths
 
 
-ACCEPTED_COLOR, REFUSED_COLOR = "#16a34a", "#dc2626"
+ACCEPTED_COLOR, REFUSED_COLOR, FLAG_COLOR = "#16a34a", "#dc2626", "#f59e0b"
 NO_SPELLING = {"text": "", "changes": [], "accepted": [], "selected": {}, "segments": []}
 
 
@@ -233,31 +233,42 @@ def spelling_review(state):
             if begin > written:
                 pieces.append((line[written:begin], None))
                 segments.append(None)
-            proposal = " ".join(change["new"]) or "(removed)"
-            label = ("✓ " if index in accepted else "✗ ") + proposal
-            color_map[label] = ACCEPTED_COLOR if index in accepted else REFUSED_COLOR
+            if change.get("flag"):   # a mismatch without a correction: shown, nothing to accept
+                label = change["context"]
+                color_map[label] = FLAG_COLOR
+            else:
+                proposal = " ".join(change["new"]) or "(removed)"
+                label = ("✓ " if index in accepted else "✗ ") + proposal
+                color_map[label] = ACCEPTED_COLOR if index in accepted else REFUSED_COLOR
             pieces.append((line[begin:finish], label))
             segments.append(index)
             written = finish
         pieces.append((line[written:] + "\n", None))
         segments.append(None)
-    shown = [c for c in changes if c["old"]]
-    if not shown:
+    shown = [c for c in changes if c["old"] and not c.get("flag")]
+    if not shown and not any(c.get("flag") for c in changes):
         details = "The model proposed no change."
     else:
         rows = []
         for i, change in enumerate(changes):
             if not change["old"]:
                 continue
+            if change.get("flag"):
+                rows.append(f"- ≠ line {change['line'] + 1}: **{isolate(' '.join(change['old']))}** "
+                            f"{change['reason']}: no correction found, check the scan")
+                continue
             mark = "✓" if i in accepted else "✗"
             if change.get("options") and len(change["options"]) > 1:
                 rule = ("from jobs.json, several jobs possible: " + " / ".join(isolate(" ".join(o)) for o in change["options"])
                         + " (click again for the next one)")
+            elif change.get("source") == "names":
+                rule = (f"the child's Arabic and Latin names did not match; proposed {change['context']}"
+                        " (names are never applied automatically: click to apply)")
             elif change.get("source") == "jobs.json":
                 rule = "from jobs.json" + (", " + change["context"] if change.get("context") else "") + (
                     "" if change["accepted"] else f"; refused by the rules: {change['reason']}")
             elif change["accepted"]:
-                rule = "accepted by the rules"
+                rule = change.get("context") or "accepted by the rules"
             else:
                 rule = f"refused by the rules: {change['reason']}"
             rows.append(f"- {mark} line {change['line'] + 1}: **{isolate(' '.join(change['old']))}** → "
@@ -288,6 +299,8 @@ def toggle_change(state, evt: gr.SelectData):
     to two jobs) goes: refused -> first option -> second option ... -> refused."""
     segments = state.get("segments") or []
     index = segments[evt.index] if isinstance(evt.index, int) and evt.index < len(segments) else None
+    if index is not None and state["changes"][index].get("flag"):
+        index = None   # a flagged name has nothing to accept
     if index is not None:
         accepted, selected = set(state["accepted"]), dict(state.get("selected") or {})
         options = state["changes"][index].get("options") or [state["changes"][index]["new"]]
@@ -309,7 +322,7 @@ def set_all(state, accept):
     There is no "accept all": it would also accept the changes the rules refused (removed words, names, Latin
     text invented by the model); those are accepted one by one, by clicking them.
     """
-    accepted = [i for i, c in enumerate(state["changes"]) if c["accepted"]] if accept else []
+    accepted = [i for i, c in enumerate(state["changes"]) if c["accepted"] and not c.get("flag")] if accept else []
     return spelling_review({**state, "accepted": accepted, "selected": {}})
 
 
@@ -393,7 +406,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 with gr.Accordion("Options", open=False):
                     use_ner = gr.Checkbox(True, label="NER models as a second extractor")
                     use_translation = gr.Checkbox(True, label="Groq translation (needs GROQ_API_KEY)")
-                    use_spellcheck = gr.Checkbox(False, label=f"Spelling correction, local model ({SPELL_MODEL}, needs Ollama)")
+                    use_spellcheck = gr.Checkbox(True, label=f"Spelling correction, local model ({SPELL_MODEL}, needs Ollama)")
                     threshold = gr.Slider(0.3, 0.99, value=0.8, step=0.01, label="Confidence threshold (flag lines under)")
             with gr.Column(scale=3):
                 with gr.Tabs():

@@ -66,15 +66,21 @@ def test_merge_line_keeps_only_the_accepted_changes():
 # ---------------------------------------------------------------------------------------------------------
 class FakeOllama(BaseHTTPRequestHandler):
     answer = None          # function: list of lines -> list of lines (or a raw string)
+    names_answer = None    # function: list of names -> list of {"arabic", "latin"} (default: unchanged)
     requests = []
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode("utf-8"))
         FakeOllama.requests.append(body)
-        lines = json.loads(body["messages"][1]["content"])["lines"]
-        content = FakeOllama.answer(lines)
-        if not isinstance(content, str):
-            content = json.dumps({"lines": content}, ensure_ascii=False)
+        payload = json.loads(body["messages"][1]["content"])
+        if "names" in payload:   # the names check (child's Arabic / Latin names)
+            answer = FakeOllama.names_answer or (lambda names: [{"arabic_of_latin": n["arabic"],
+                                                                "latin_of_arabic": n["latin"]} for n in names])
+            content = json.dumps({"names": answer(payload["names"])}, ensure_ascii=False)
+        else:
+            content = FakeOllama.answer(payload["lines"])
+            if not isinstance(content, str):
+                content = json.dumps({"lines": content}, ensure_ascii=False)
         data = json.dumps({"message": {"role": "assistant", "content": content}}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -93,6 +99,7 @@ def ollama(monkeypatch):
     thread.start()
     monkeypatch.setattr(sc, "OLLAMA_URL", f"http://127.0.0.1:{server.server_port}")
     FakeOllama.requests = []
+    FakeOllama.names_answer = None
     yield FakeOllama
     server.shutdown()
 
@@ -493,3 +500,185 @@ def test_a_far_model_guess_is_not_a_job_proposal(ollama):
     changes, _ = sc.propose(text)
     assert not any(c["accepted"] for c in changes)
     assert sc.apply_changes(text, changes) == text
+
+# ---------------------------------------------------------------------------------------------------------
+# numbers judged by the whole record; no bias towards an example of the instructions
+# ---------------------------------------------------------------------------------------------------------
+DATE_DOCUMENT = (
+    "رسم ولادة رقم: 42\n"
+    "في يوم ثالث و عشري ذو الحجة\n"
+    "عام : ألف و أربعمائة و ثمانية و عشرين هجرية\n"
+    "موافق ثالث يناير سنة ألفين و ثمانين ميلادية.\n"
+    "على الساعة: الخامسة عشرة\n"
+    "الإسم الشخصي : بلال\n"
+    "ذكر\n"
+    "من والده عبد الجبار قاسم بن محمد\n"
+    "حرفته : مستخدم\n"
+    "و والدته عتيقة ممير بنت عبد العزيز.\n"
+    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
+    "بناءا على ما صرحت به السيدة عتيقة ممير (والدته) تحت عدد : 38\n"
+    "وحرر في تاسع محرم عام ألف و أربعمائة و تسعة و عشرين هجرية\n"
+    "موافق ثامن عشر يناير سنة ألفين و ثمانين ميلادية.\n"
+    "من طرفنا نحن عبد الرحيم ڭلفاع موظف جماعي\n"
+)
+
+
+def test_a_misread_year_is_corrected_by_the_context(ollama):
+    """'ألفين و ثمانين' (2080, impossible, Hijri 1428 / 1429): 'ثمانية' makes both dates right."""
+    ollama.answer = lambda lines: [l.replace("ألفين و ثمانين", "ألفين و ثمانية") for l in lines]
+    changes, _ = sc.propose(DATE_DOCUMENT)
+    fixes = [c for c in changes if c["old"] == ["ثمانين"]]
+    assert len(fixes) == 2 and all(c["accepted"] for c in fixes)
+    assert "Hijri" in sc.describe(fixes[0])
+    assert sc.record_problems(sc.apply_changes(DATE_DOCUMENT, changes))[0] < sc.record_problems(DATE_DOCUMENT)[0]
+
+
+def test_a_number_change_that_fixes_nothing_stays_refused(ollama):
+    """'عشري' -> 'عشرين' changes no error: a correct number word is kept."""
+    ollama.answer = lambda lines: [l.replace("ثالث و عشري", "ثالث و عشرين") for l in lines]
+    changes, _ = sc.propose(DATE_DOCUMENT)
+    assert [(c["old"], c["accepted"]) for c in changes] == [(["عشري"], False)]
+
+
+def test_a_number_change_that_breaks_a_date_is_refused(ollama):
+    ollama.answer = lambda lines: [l.replace("ثمانية و عشرين هجرية", "ثمانية و ثلاثين هجرية") for l in lines]
+    changes, _ = sc.propose(DATE_DOCUMENT)
+    assert not any(c["accepted"] for c in changes)
+
+
+def test_a_right_job_gets_no_proposal(ollama):
+    """'مستخدم' is a job of jobs.json: the model's 'صباغ' is not even shown."""
+    ollama.answer = lambda lines: [l.replace("مستخدم", "صباغ") for l in lines]
+    changes, _ = sc.propose(DATE_DOCUMENT)
+    assert not [c for c in changes if c["old"] == ["مستخدم"]]
+
+
+def test_the_instructions_have_no_job_example():
+    """An example in the instructions is copied by a small model ('صباغ' proposed for any job)."""
+    assert "صباخ" not in sc.PROMPT and "صباغ" not in sc.PROMPT
+
+
+
+# ---------------------------------------------------------------------------------------------------------
+# the child's names: the Arabic and the Latin reading are compared
+# ---------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("arabic,latin", [
+    ("بلال", "BILAL"), ("قاسم", "KACIM"), ("الإدريسي", "IDRISSI"), ("السباعي", "SBAI"), ("الياس", "ILYASSE"),
+    ("عبد الرحيم", "ABDERRAHIM"), ("عبد الكبير", "ABDELKEBIR"), ("يوسف", "YOUSSEF"), ("خديجة", "KHADIJA"),
+    ("غزلان", "GHIZLANE"), ("ڭمير", "GAMIR"), ("زكرياء", "ZAKARIYA"), ("سعاد", "SOUAD"), ("الودغيري", "OUDGHIRI"),
+])
+def test_names_that_agree(arabic, latin):
+    assert sc.names_agree(arabic, latin)
+
+
+@pytest.mark.parametrize("arabic,latin", [("ملال", "BILAL"), ("سارة", "HIND"), ("قبلي", "KACIM"),
+                                          ("بلال", "BIRAL"), ("بلال", "BITAL")])
+def test_names_that_disagree(arabic, latin):
+    assert not sc.names_agree(arabic, latin)
+
+
+def test_every_sample_name_agrees():
+    """No false alarm on the samples: every child name pair of samples/ agrees."""
+    for sample in sorted((ROOT / "samples").glob("*.txt")):
+        lines = read_text_file(sample).split("\n")
+        names = sc.child_names(lines)
+        assert set(names) == {"first name", "family name"}, sample.name
+        for sides in names.values():
+            arabic = " ".join(sc.span_words(lines, sides["arabic"]))
+            latin = " ".join(sc.span_words(lines, sides["latin"]))
+            assert sc.names_agree(arabic, latin), (sample.name, arabic, latin)
+
+
+NAME_DOCUMENT = (
+    "في يوم ثالث و عشري ذو الحجة\n"
+    "PRENOM BILAL\n"
+    "NOM KACIM\n"
+    "الإسم الشخصي : ملال\n"
+    "ذكر\n"
+    "الإسم العائلي قاسم\n"
+    "من والده عبد الجبار قاسم بن محمد\n"
+)
+
+
+def test_a_misread_arabic_name_gets_a_proposal(ollama):
+    """'ملال' / 'BILAL': the Arabic of BILAL is 'بلال' (1 letter), the Latin of ملال 'MALAL' (2 letters):
+    the Arabic gets the proposal, not applied (names are decided by a person)."""
+    ollama.answer = lambda lines: lines
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "بلال", "latin_of_arabic": "MALAL"}]
+    changes, _ = sc.propose(NAME_DOCUMENT)
+    [change] = [c for c in changes if c.get("source") == "names"]
+    assert (change["old"], change["new"], change["accepted"]) == (["ملال"], ["بلال"], False)
+    assert "BILAL" in sc.describe(change)
+    assert sc.apply_changes(NAME_DOCUMENT, changes, {changes.index(change)}).count("الإسم الشخصي : بلال") == 1
+    assert sc.apply_changes(NAME_DOCUMENT, changes) == NAME_DOCUMENT      # nothing applied by default
+
+
+def test_a_misread_latin_name_gets_a_proposal(ollama):
+    text = NAME_DOCUMENT.replace("ملال", "بلال").replace("BILAL", "BIRAL")
+    ollama.answer = lambda lines: lines
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "بيرال", "latin_of_arabic": "BILAL"}]
+    changes, _ = sc.propose(text)
+    [change] = [c for c in changes if c.get("source") == "names"]
+    assert (change["old"], change["new"]) == (["BIRAL"], ["BILAL"])
+
+
+def test_both_sides_are_proposed_on_a_tie(ollama):
+    ollama.answer = lambda lines: lines
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "بلال", "latin_of_arabic": "MILAL"}]
+    changes, _ = sc.propose(NAME_DOCUMENT)
+    assert {tuple(c["new"]) for c in changes if c.get("source") == "names"} == {("بلال",), ("MILAL",)}
+
+
+@pytest.mark.parametrize("answer", [
+    {"arabic_of_latin": "هشام", "latin_of_arabic": "HICHAM"},     # another name altogether
+    {"arabic_of_latin": "ملال", "latin_of_arabic": "BILAL"},      # the readings sent back: no correction
+    {},                                                          # nothing usable
+])
+def test_without_a_usable_proposal_the_name_is_flagged(ollama, answer):
+    ollama.answer = lambda lines: lines
+    ollama.names_answer = lambda names: [answer]
+    changes, notes = sc.propose(NAME_DOCUMENT)
+    [flag] = [c for c in changes if c.get("source") == "names"]
+    assert flag["flag"] and flag["old"] == flag["new"] == ["ملال"] and not flag["accepted"]
+    assert "BILAL" in flag["context"] and any("do not match" in n for n in notes)
+    assert sc.apply_changes(NAME_DOCUMENT, changes, {changes.index(flag)}) == NAME_DOCUMENT
+
+
+@pytest.mark.parametrize("shape", [
+    lambda entry: {"names": [entry]}, lambda entry: [entry], lambda entry: entry,
+])
+def test_name_answers_in_other_shapes(shape):
+    entry = {"arabic_of_latin": "بلال", "latin_of_arabic": "MALAL"}
+    assert sc.name_answers(shape(entry), 1) == [entry]
+
+
+def test_names_without_the_model(monkeypatch):
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    changes, notes = sc.propose(NAME_DOCUMENT)
+    [flag] = [c for c in changes if c.get("source") == "names"]
+    assert flag["flag"]
+    assert any("'ملال'" in n and "'BILAL'" in n for n in notes)
+
+
+def test_agreeing_names_cost_no_request(ollama):
+    ollama.answer = lambda lines: lines
+    sc.propose(NAME_DOCUMENT.replace("ملال", "بلال"))
+    assert not any("names" in json.loads(r["messages"][1]["content"]) for r in ollama.requests)
+
+
+def test_app_shows_a_flag_that_cannot_be_accepted(ollama):
+    pytest.importorskip("gradio")
+    import app
+    ollama.answer = lambda lines: lines
+    ollama.names_answer = lambda names: [{}]
+    changes, _ = sc.propose(NAME_DOCUMENT)
+    state = {**app.NO_SPELLING, "text": NAME_DOCUMENT, "changes": changes, "accepted": []}
+    view, details, state = app.spelling_review(state)
+    pieces = [(p["token"], p["class_or_confidence"]) if isinstance(p, dict) else tuple(p) for p in view.value]
+    assert ("ملال", "≠ BILAL") in pieces and "no correction found" in details
+    piece = pieces.index(("ملال", "≠ BILAL"))
+
+    class Click:
+        index = piece
+    _, _, state = app.toggle_change(state, Click())
+    assert state["accepted"] == []

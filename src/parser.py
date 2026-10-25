@@ -780,6 +780,18 @@ def parse_with_notes(raw_text, ner=None):
     parsed["PRENOMMEREAR"] = mother_info["first"]  # Everything before بن/بنت
     parsed["NOMMEREAR"] = mother_info["last"]  # بن/بنت and what comes after
     parsed["NATIONALITEMERE"] = mother_info["nationality"]
+    # a masculine "جنسيته" in the mother zone: the HTR misread "جنسيتها", or the father's nationality was printed
+    # there. It is the mother's when the father already has his own, otherwise it is the father's.
+    if not parsed["NATIONALITEMERE"]:
+        masculine = extract(
+            r"(?<!\S)جنسيته\s+(.+?)(?=\s+المولود|\s+في\s|\s+(?:ال)?موا?فق|\s+حرفت|\s+مهنت|\s+جنسيت|\s*$)", mother
+        )
+        if masculine and parsed["NATIONALITEPERE"]:
+            parsed["NATIONALITEMERE"] = masculine
+            notes.append(f"NATIONALITEMERE: read after 'جنسيته' (masculine label) in the mother zone: {masculine!r}")
+        elif masculine:
+            parsed["NATIONALITEPERE"] = masculine
+            notes.append(f"NATIONALITEPERE: read after 'جنسيته' printed in the mother zone: {masculine!r}")
     parsed["ADRESSENAISSMERE"] = strip_attached_b(mother_info["birthplace"])
     parsed["DATENAISSMEREAR"] = mother_info["date_ar"]
     parsed["DATENAISSMEREFR"] = mother_info["date_fr"]
@@ -790,6 +802,11 @@ def parse_with_notes(raw_text, ner=None):
         if trimmed != parsed[field]:
             notes.append(f"{field}: {parsed[field]!r} cut to the known nationality {trimmed!r}")
             parsed[field] = trimmed
+    # some certificates do not write the child's nationality: when both parents have the same one, it is the child's
+    if (not parsed["NATIONALITE"] and parsed["NATIONALITEPERE"]
+            and ar_key(parsed["NATIONALITEPERE"]) == ar_key(parsed["NATIONALITEMERE"])):
+        parsed["NATIONALITE"] = parsed["NATIONALITEPERE"]
+        notes.append(f"NATIONALITE: not written, both parents are {parsed['NATIONALITEPERE']!r}: same for the child")
     # administartion
     parsed["ADRESSEPARENT"] = extract(
         r"الساكن\w*\s+(.+?)(?=\s+بناء[اأ]?\s+على|\s*$)", administrative

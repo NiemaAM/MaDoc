@@ -244,3 +244,53 @@ def test_app_view(tmp_path):
     html = app.render_view(str(scan), lines, 0.8)
     assert "bv-poly-1" in html and "&lt;ولادة&gt;" in html and "1 under 80%" in html
     assert app.rerender(str(tmp_path / "deleted.png"), lines, 0.8).startswith("<p>The scan")
+
+# ---------------------------------------------------------------------------------------------------------
+# parser: nationalities
+# ---------------------------------------------------------------------------------------------------------
+NATIONALITY_DOCUMENT = (
+    "في يوم ثالث شوال\n"
+    "الإسم الشخصي : بلال\n"
+    "ذكر\n"
+    "{child}"
+    "من والده عبد الجبار قاسم بن محمد\n"
+    "{father}"
+    "و والدته عتيقة ممير بنت عبد العزيز.\n"
+    "المولودة ب جماعة خريبڭة الحضرية.\n"
+    "{mother}"
+    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
+)
+
+
+def nationalities(child="", father="جنسيته : مغربية.\n", mother="جنسيتها : مغربية\n"):
+    import parser as record_parser
+    record, notes = record_parser.parse_with_notes(
+        NATIONALITY_DOCUMENT.format(child=child, father=father, mother=mother), None)
+    return (record["NATIONALITE"], record["NATIONALITEPERE"], record["NATIONALITEMERE"]), notes
+
+
+def test_mother_nationality_after_a_masculine_label():
+    """The HTR wrote 'جنسيته' in the mother's block: it is still the mother's nationality."""
+    values, notes = nationalities(mother="جنسيته : مغربية\n")
+    assert values[2] == "مغربية" and any("masculine label" in n for n in notes)
+
+
+def test_a_masculine_label_in_the_mother_zone_is_the_father_when_he_has_none():
+    values, _ = nationalities(father="", mother="جنسيته : جزائرية\n")
+    assert values[1:] == ("جزائرية", "")
+
+
+def test_child_nationality_from_the_parents():
+    """No nationality written for the child: both parents are Moroccan -> the child too."""
+    values, notes = nationalities()
+    assert values == ("مغربية", "مغربية", "مغربية") and any("same for the child" in n for n in notes)
+
+
+def test_child_nationality_not_guessed_when_the_parents_differ():
+    values, _ = nationalities(mother="جنسيتها : فرنسية\n")
+    assert values == ("", "مغربية", "فرنسية")
+
+
+def test_written_child_nationality_is_kept():
+    values, _ = nationalities(child="جنسيته : فرنسية\n")
+    assert values[0] == "فرنسية"

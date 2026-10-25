@@ -428,6 +428,10 @@ def job_changes(text, lines, protected_by_line, model_changes):
             changes.append(job_change(slot, options, single,
                                       "" if single else "several jobs are possible: " + " / ".join(options)))
             handled.add(k)
+    # a job written right is never changed: the model's proposals there are dropped, not shown
+    for k, slot in ids.items():
+        if exact_job(slot["words"]):
+            handled.add(k)
     # the model's own changes inside every job are replaced by these (or refused by line_changes)
     for k in handled:
         slot = ids[k]
@@ -653,8 +657,15 @@ def describe(change):
     """One readable line for a change ("line 4: 'موفق' -> 'موافق'", or the refusal and its reason)."""
     before = " ".join(change["old"]) or "(nothing)"
     after = " ".join(change["new"]) or "(removed)"
-    source = " (jobs.json" + (", " + change["context"] if change.get("context") else "") + ")" \
-        if change.get("source") == "jobs.json" else ""
+    if change.get("flag"):
+        return (f"line {change['line'] + 1}: {' '.join(change['old'])!r} {change['reason']} "
+                "(no correction found, check the scan)")
+    if change.get("source") == "names":
+        source = f" ({change['context']})"
+    elif change.get("source") == "jobs.json":
+        source = " (jobs.json" + (", " + change["context"] if change.get("context") else "") + ")"
+    else:
+        source = f" ({change['context']})" if change.get("context") else ""
     if change["accepted"]:
         return f"line {change['line'] + 1}: {before!r} -> {after!r}{source}"
     return f"line {change['line'] + 1}: refused {before!r} -> {after!r}{source} ({change['reason']})"
@@ -695,9 +706,10 @@ The user sends a JSON object {"lines": [...]}, one string per line of the docume
 Correct ONLY spelling mistakes made by the reading model:
 - a missing, extra, doubled or wrong letter in a word ("البيتت" -> "البيت", "موفق" -> "موافق"),
 - a word cut in two ("ميلاي ية" -> "ميلادية"),
-- a misread profession after "حرفته" / "حرفتها" / "مهنته" / "مهنتها": write the usual Arabic name of the
-  profession it most probably is ("صباخ" -> "صباغ").
-NEVER change: personal names, family names, place names you are not sure of, numbers, digits, Latin text
+- a misread profession after "حرفته" / "حرفتها" / "مهنته" / "مهنتها", only when the written word is not a real
+  profession: write the profession it is most probably a misreading of (one or two letters differ).
+NEVER replace a correct word by another correct word: a correct profession by another profession, a correct
+number by another number. NEVER change: personal names, family names, place names you are not sure of, numbers, digits, Latin text
 (PRENOM, NOM and the French names), punctuation, the order of the words. Never add or remove a word, never
 rephrase, never translate, never complete missing information. When unsure, keep the word as it is.
 
@@ -715,13 +727,13 @@ def ollama_url(path):
     return OLLAMA_URL.rstrip("/") + path
 
 
-def ask_model(lines, model=None):
-    """Lines -> the model's corrected lines (list of str), or raise."""
+def ollama_json(system, payload, model=None):
+    """One request to the local model: system instructions + a JSON payload -> the JSON object it answers."""
     body = {
         "model": model or MODEL,
         "messages": [
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": json.dumps({"lines": lines}, ensure_ascii=False)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         "stream": False,
         "format": "json",
@@ -735,10 +747,248 @@ def ask_model(lines, model=None):
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         answer = json.loads(response.read().decode("utf-8"))
     content = answer.get("message", {}).get("content", "")
-    proposed = json.loads(content).get("lines")
+    result = json.loads(content)
+    if not isinstance(result, dict):
+        raise ValueError("the model did not return a JSON object")
+    return result
+
+
+def ask_model(lines, model=None):
+    """Lines -> the model's corrected lines (list of str), or raise."""
+    proposed = ollama_json(PROMPT, {"lines": lines}, model).get("lines")
     if not isinstance(proposed, list) or not all(isinstance(line, str) for line in proposed):
         raise ValueError("the model did not return a list of lines")
     return proposed
+
+
+# ---------------------------------------------------------------------------------------------------------
+# the child's names: the Arabic and the Latin reading must be the same name
+# ---------------------------------------------------------------------------------------------------------
+NAME_PROMPT = """You transliterate Moroccan personal names between Arabic script and the Latin spelling used by
+Moroccan civil registers (French conventions: ش = CH, خ = KH, غ = GH, و = OU, ج = J; the article ال is often
+not written: الإدريسي = IDRISSI).
+
+The user sends {"names": [{"kind": "...", "arabic": "...", "latin": "..."}]}: two readings of the same name.
+For each name return:
+- "arabic_of_latin": the usual Arabic spelling of the Latin reading,
+- "latin_of_arabic": the usual registry Latin spelling (upper case) of the Arabic reading.
+Transliterate only: do not correct, do not choose, do not translate the meaning.
+
+Return ONLY {"names": [{"arabic_of_latin": "...", "latin_of_arabic": "..."}]}, one object per input name."""
+
+# Arabic letter -> consonant class shared with the French spelling (vowels, alif, waw, ya, ain, ta marbuta: none)
+ARABIC_SOUNDS = {
+    "ب": "B", "ت": "T", "ث": "T", "ج": "J", "ح": "H", "خ": "K", "د": "D", "ذ": "D", "ر": "R", "ز": "Z",
+    "س": "S", "ش": "C", "ص": "S", "ض": "D", "ط": "T", "ظ": "D", "غ": "K", "ف": "F", "ق": "K", "ك": "K",
+    "ڭ": "K", "گ": "K", "ل": "L", "م": "M", "ن": "N", "ه": "H", "پ": "B", "ڤ": "F",
+}
+# G and K are one class: ق is written K, Q or G in French spellings, غ GH, ڭ G
+# French spellings of Moroccan names: two letters for one sound, then one letter -> the same classes
+LATIN_PAIRS = [("CH", "C"), ("KH", "K"), ("GH", "K"), ("TH", "T"), ("DH", "D"), ("DJ", "J"), ("OU", ""),
+               ("QU", "K")]
+LATIN_SOUNDS = {"B": "B", "T": "T", "J": "J", "G": "K", "H": "H", "D": "D", "R": "R", "Z": "Z", "S": "S",
+                "F": "F", "Q": "K", "K": "K", "L": "L", "M": "M", "N": "N", "P": "B", "V": "F", "X": "KS"}
+
+
+def arabic_skeleton(name, drop_articles=()):
+    """'الإدريسي' -> 'LDRS': the consonants of an Arabic name (doubled letters dropped).
+
+    drop_articles: indexes of the words whose leading "ال" is not written in French (الإدريسي = IDRISSI,
+    عبد الرحيم = ABDERRAHIM); it is not always an article ("الياس" = ILYASSE), see arabic_skeletons."""
+    out = []
+    for k, word in enumerate(surface(name).split()):
+        if k in drop_articles and word.startswith("ال") and len(word) > 3:
+            word = word[2:]
+        out.extend(ARABIC_SOUNDS.get(char, "") for char in word)
+    return re.sub(r"(.)\1+", r"\1", "".join(out))
+
+
+def arabic_skeletons(name):
+    """Every skeleton of the name, with each leading "ال" written or not."""
+    from itertools import combinations
+    starts = [k for k, word in enumerate(surface(name).split()) if word.startswith("ال") and len(word) > 3]
+    return {arabic_skeleton(name, set(drop)) for n in range(len(starts) + 1) for drop in combinations(starts, n)}
+
+
+def latin_skeleton(name):
+    """'EL IDRISSI' -> 'DRS': the consonants of a French spelling, with the classes of arabic_skeleton."""
+    name = re.sub(r"[^A-Z ]", "", unit_key_latin(name))
+    name = re.sub(r"^(?:EL|AL) +", "", name).replace(" ", "")
+    out, i = [], 0
+    while i < len(name):
+        pair = next((two for two, sound in LATIN_PAIRS if name.startswith(two, i)), None)
+        if pair:
+            out.append(dict(LATIN_PAIRS)[pair])
+            i += 2
+            continue
+        char = name[i]
+        if char == "C":   # C before E / I sounds S, otherwise K
+            out.append("S" if name[i + 1:i + 2] in ("E", "I") else "K")
+        else:
+            out.append(LATIN_SOUNDS.get(char, ""))
+        i += 1
+    return re.sub(r"(.)\1+", r"\1", "".join(out))
+
+
+def unit_key_latin(name):
+    import unicodedata
+    name = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in name if not unicodedata.combining(c)).upper()
+
+
+def names_agree(arabic, latin):
+    """True when the Arabic and the Latin reading can be the same name ('بلال' / 'BILAL', 'قاسم' / 'KACIM')."""
+    skeletons, b = arabic_skeletons(arabic), latin_skeleton(latin)
+    if not b or not all(skeletons):
+        return True   # nothing to compare (a name of vowels only): no alarm
+    if b in skeletons:
+        return True
+    # long names only: one consonant may differ (a short name has no letter to spare: BIRAL is not بلال)
+    return len(b) >= 5 and max(SequenceMatcher(None, a, b).ratio() for a in skeletons) >= 0.85
+
+
+def name_span(lines, line_index, start, take):
+    """Units after a label, on its line or (when the label ends the line) on the next line: (line, start, end)."""
+    for index in (line_index, line_index + 1):
+        if index >= len(lines):
+            break
+        units = line_units(lines[index])
+        first = start if index == line_index else 0
+        end = first
+        while end < len(units) and take(units[end]["text"]):
+            end += 1
+        if end > first:
+            return index, first, end
+        if index == line_index and first < len(units):
+            break   # something else follows the label on its line: no name there
+    return None
+
+
+def child_names(lines, vocabulary=None):
+    """The child's names as read: {"first name" / "family name": {"arabic": (line, start, end), "latin": ...}}.
+
+    Arabic: the words after "الإسم الشخصي" / "الإسم العائلي" (also misspelt); Latin: after "PRENOM" / "NOM".
+    These labels are only written for the child (the scan may print "NOM ..." after the father's line).
+    """
+    def arabic_name_word(text):
+        return bool(ARABIC_WORD.search(text)) and not is_known(text, vocabulary) and not label_kind(surface(text))
+
+    def latin_name_word(text):
+        return bool(re.fullmatch(r"[A-Za-zÀ-ÿ'’\-]+", text)) and text.upper() not in ("PRENOM", "NOM")
+
+    found = {}
+    for line_index, line in enumerate(lines):
+        units = line_units(line)
+        words = [surface(u["text"]) for u in units]
+        for i, word in enumerate(words):
+            kind = None
+            if word.upper() == "PRENOM":
+                kind, side, take = "first name", "latin", latin_name_word
+            elif word.upper() == "NOM":
+                kind, side, take = "family name", "latin", latin_name_word
+            elif edit_distance(word, "الشخصي") <= 1:
+                kind, side, take = "first name", "arabic", arabic_name_word
+            elif edit_distance(word, "العائلي") <= 1:
+                kind, side, take = "family name", "arabic", arabic_name_word
+            if kind and side not in found.get(kind, {}):
+                span = name_span(lines, line_index, i + 1, take)
+                if span:
+                    found.setdefault(kind, {})[side] = span
+    return {kind: sides for kind, sides in found.items() if len(sides) == 2}
+
+
+def span_words(lines, span):
+    line, start, end = span
+    return [u["text"] for u in line_units(lines[line])[start:end]]
+
+
+def name_answers(answer, count):
+    """The model's answer -> [{"arabic_of_latin", "latin_of_arabic"}] (tolerates a bare list or a single object)."""
+    if isinstance(answer, dict) and isinstance(answer.get("names"), list):
+        answer = answer["names"]
+    elif isinstance(answer, dict) and ("arabic_of_latin" in answer or "latin_of_arabic" in answer):
+        answer = [answer]
+    if not isinstance(answer, list):
+        return [{}] * count
+    out = [a if isinstance(a, dict) else {} for a in answer][:count]
+    return out + [{}] * (count - len(out))
+
+
+def name_candidates(arabic, latin, entry):
+    """The corrections the transliterations allow: [(distance, side, new text)], closest first.
+
+    "arabic": the Arabic reading replaced by the Arabic spelling of the Latin reading ("ملال" -> "بلال");
+    "latin": the Latin reading replaced by the Latin spelling of the Arabic reading. A side is changed only by
+    2 letters at most, with the same number of words, and the two readings must then agree.
+    """
+    candidates = []
+    new_arabic = str(entry.get("arabic_of_latin") or "").strip()
+    if (new_arabic and surface(new_arabic) != surface(arabic) and ARABIC_WORD.search(new_arabic)
+            and not DIGIT_OR_LATIN.search(new_arabic) and len(new_arabic.split()) == len(arabic.split())
+            and names_agree(new_arabic, latin)):
+        distance = edit_distance(surface(arabic).replace(" ", ""), surface(new_arabic).replace(" ", ""))
+        if distance <= 2:
+            candidates.append((distance, "arabic", new_arabic))
+    new_latin = re.sub(r"\s+", " ", unit_key_latin(str(entry.get("latin_of_arabic") or ""))).strip()
+    if (new_latin and new_latin != unit_key_latin(latin) and re.fullmatch(r"[A-Z'’\- ]+", new_latin)
+            and len(new_latin.split()) == len(latin.split()) and names_agree(arabic, new_latin)):
+        distance = edit_distance(unit_key_latin(latin).replace(" ", ""), new_latin.replace(" ", ""))
+        if distance <= 2:
+            candidates.append((distance, "latin", new_latin))
+    return sorted(candidates)
+
+
+def name_changes(lines, model_changes, notes, model=None, use_model=True):
+    """Proposals for the child's names whose Arabic and Latin readings disagree (never applied by default).
+
+    The local model only transliterates (the Latin reading into Arabic, the Arabic reading into Latin); the
+    side that needs the fewest letters changed to agree with the other one gets the proposal (both on a
+    tie). Without a usable proposal, the Arabic name is flagged in the Spelling tab ("≠ BILAL") and the notes
+    say what the model answered. The model's own changes on these names are replaced by this check.
+    """
+    names = child_names(lines)
+    disagreeing = []
+    for kind, sides in names.items():
+        arabic = " ".join(span_words(lines, sides["arabic"]))
+        latin = " ".join(span_words(lines, sides["latin"]))
+        if not names_agree(arabic, latin):
+            disagreeing.append((kind, sides, arabic, latin))
+    if not disagreeing:
+        return []
+    entries = [{}] * len(disagreeing)
+    if use_model:
+        try:
+            answer = ollama_json(NAME_PROMPT, {"names": [{"kind": k, "arabic": a, "latin": l}
+                                                         for k, _, a, l in disagreeing]}, model)
+            entries = name_answers(answer, len(disagreeing))
+        except Exception as e:   # not running, refused address, bad answer: the mismatch is only flagged
+            notes.append(f"names check without the model ({type(e).__name__}: {e})")
+    changes = []
+    for (kind, sides, arabic, latin), entry in zip(disagreeing, entries):
+        for side in ("arabic", "latin"):
+            line, start, end = sides[side]
+            for change in [c for c in model_changes if c["line"] == line and start <= c["start"] < end]:
+                model_changes.remove(change)
+        candidates = name_candidates(arabic, latin, entry)
+        best = [c for c in candidates if c[0] == candidates[0][0]] if candidates else []
+        if not best:
+            told = f"; the model answered {entry}" if entry else ""
+            notes.append(f"child's {kind}: the Arabic {arabic!r} and the Latin {latin!r} do not match, no "
+                         f"correction found (check the scan){told}")
+            line, start, end = sides["arabic"]
+            changes.append({"line": line, "start": start, "end": end, "old": arabic.split(), "new": arabic.split(),
+                            "accepted": False, "flag": True, "source": "names",
+                            "reason": f"does not match the Latin {latin}", "context": f"≠ {latin}"})
+            continue
+        for _, side, new in best:
+            old = arabic if side == "arabic" else latin
+            line, start, end = sides[side]
+            pair = f"{new} / {latin}" if side == "arabic" else f"{arabic} / {new}"
+            changes.append({"line": line, "start": start, "end": end, "old": old.split(), "new": new.split(),
+                            "accepted": False, "source": "names",
+                            "reason": f"the Arabic and the Latin {kind} did not match ({arabic} / {latin})",
+                            "context": f"{kind}: {pair}"})
+    return changes
 
 
 def propose(text, model=None):
@@ -765,6 +1015,7 @@ def propose(text, model=None):
         notes.append(f"spelling model skipped: Ollama not reachable at {OLLAMA_URL} ({e})")
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         notes.append(f"spelling model skipped: unusable answer from the model ({e})")
+    model_ok = proposed is not None
     if proposed is None:
         # without the model, the jobs are still checked against jobs.json
         proposed = [lines[i] for i in positions]
@@ -777,7 +1028,65 @@ def propose(text, model=None):
         changes.extend(line_changes(lines[i], new_line, i, vocabulary, protected))
     # the jobs are read in the context of the whole document (a parent's job is written twice)
     changes.extend(job_changes(text, lines, protected_by_line, changes))
-    return sorted(changes, key=lambda c: (c["line"], c["start"])), notes
+    # the child's names: the Arabic and the Latin reading are compared (proposals, never applied by default)
+    changes.extend(name_changes(lines, changes, notes, model, use_model=model_ok))
+    changes = sorted(changes, key=lambda c: (c["line"], c["start"]))
+    # numbers: judged by the whole record (a misread year makes a date impossible)
+    date_fixes(text, changes)
+    return changes, notes
+
+
+@lru_cache(maxsize=None)
+def number_words():
+    """The number words of date_time.json, as written (with and without the article)."""
+    words = set()
+    for aliases in dates_data.get("numbers", {}).values():
+        for alias in aliases if isinstance(aliases, list) else []:
+            for word in surface(str(alias)).split():
+                words.update({word, word[2:] if word.startswith("ال") else "ال" + word})
+    return frozenset(words)
+
+
+def record_problems(text):
+    """(errors, Gregorian / Hijri mismatches) of the record the rules read from this text (no NER, no Groq)."""
+    import converter
+    import mapper
+    import parser as record_parser
+    import validator
+
+    record = mapper.map_fields(converter.convert(record_parser.parse(text, None)))
+    issues = validator.validate(record, check_translation=False)["issues"]
+    errors = sum(1 for i in issues if i["level"] == "error")
+    mismatches = sum(1 for i in issues if "do not match" in i["message"])
+    return errors, mismatches
+
+
+def date_fixes(text, changes):
+    """Accept the number corrections that make a date possible.
+
+    "سنة ألفين و ثمانين" (2080) next to the Hijri year 1428 is a misreading of "ثمانية" (2008), although
+    "ثمانين" is a correct word. A refused change of number words (1 or 2 letters) is accepted when the record
+    read with it has fewer errors (a year in the future, a declaration before the birth ...) and no new
+    Gregorian / Hijri mismatch: the validator of the whole record is the judge.
+    """
+    numbers = number_words()
+    candidates = [i for i, c in enumerate(changes)
+                  if not c["accepted"] and c["old"] and c["new"] and c.get("source") != "jobs.json"
+                  and all(surface(w) in numbers for w in c["old"] + c["new"])
+                  and edit_distance("".join(map(unit_key, c["old"])), "".join(map(unit_key, c["new"]))) <= 2]
+    if not candidates:
+        return
+    accepted = {i for i, c in enumerate(changes) if c["accepted"]}
+    base = apply_changes(text, changes, accepted)
+    errors, mismatches = record_problems(base)
+    for i in candidates:
+        trial = apply_changes(text, changes, accepted | {i})
+        new_errors, new_mismatches = record_problems(trial)
+        if new_errors < errors and new_mismatches <= mismatches:
+            changes[i] = {**changes[i], "accepted": True, "reason": "",
+                          "context": "the date becomes possible and agrees with the Hijri date"}
+            accepted.add(i)
+            errors, mismatches = new_errors, new_mismatches
 
 
 def correct_text(text, model=None):
