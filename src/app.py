@@ -634,19 +634,81 @@ def options_of(ner, french_ner, translate, spellcheck):
     return {"ner": ner, "french_ner": french_ner, "translate": translate, "spellcheck": spellcheck}
 
 
-def check_spelling(doc, options, progress=None):
-    """The spelling proposals on the HTR text (local model); the rules' choice is applied."""
+def edited_words(before, after):
+    """{(line, unit)} of the words of `after` a person wrote or changed by hand (units of line_units)."""
+    from difflib import SequenceMatcher
+    old, new = before.split("\n"), after.split("\n")
+    out = set()
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "insert" or (tag == "replace" and i2 - i1 != j2 - j1):
+            out.update((j, k) for j in range(j1, j2) for k in range(len(line_units(new[j]))))
+        elif tag == "replace":   # the same number of lines: word by word
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                a = [u["text"] for u in line_units(old[i])]
+                b = [u["text"] for u in line_units(new[j])]
+                for op, _, _, k1, k2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+                    if op in ("replace", "insert"):
+                        out.update((j, k) for k in range(k1, k2))
+    return out
+
+
+def person_refused(spelling):
+    """The corrections the person refused in the review: {(line text, start, end, new words)}."""
+    lines = spelling.get("text", "").split("\n")
+    chosen = set(spelling.get("accepted") or [])
+    return {(lines[c["line"]], c["start"], c["end"], tuple(c["new"]))
+            for i, c in enumerate(spelling.get("changes") or [])
+            if c["accepted"] and i not in chosen and c["line"] < len(lines)}
+
+
+def check_spelling(doc, options, progress=None, text=None, protect=(), refused=()):
+    """The spelling proposals on a text (the HTR text by default; local model); the rules' choice is applied.
+
+    protect: {(line, unit)} of words written by hand: a correction on them is proposed in orange, never applied
+    by itself (the person's edit wins over the rules). refused: corrections the person refused before (see
+    person_refused), still refused."""
+    base = doc["htr"] if text is None else text
     if not options["spellcheck"]:
         doc["spelling_notes"] = []
-        return dict(NO_SPELLING), doc["htr"]
+        return dict(NO_SPELLING), base
     if progress:
         progress(0.6, desc=f"Spelling check (local model {SPELL_MODEL})")
-    changes, skipped = propose(doc["htr"])
-    spelling = {"text": doc["htr"], "changes": changes, "selected": {},
+    changes, skipped = propose(base)
+    lines = base.split("\n")
+    for i, change in enumerate(changes):
+        if not change["accepted"]:
+            continue
+        span = {(change["line"], k) for k in range(change["start"], max(change["end"], change["start"] + 1))}
+        if span & set(protect):
+            changes[i] = {**change, "accepted": False, "check": True,
+                          "reason": "written by hand: click to apply the correction"}
+        elif (lines[change["line"]], change["start"], change["end"], tuple(change["new"])) in refused:
+            changes[i] = {**change, "accepted": False, "reason": "refused in the spelling review"}
+    spelling = {"text": base, "changes": changes, "selected": {},
                 "accepted": [i for i, c in enumerate(changes) if c["accepted"]], "segments": []}
     doc["spelling_notes"] = [f"[spelling] {n}" for n in skipped] + spelling_notes(spelling).strip().split("\n")
     doc["spelling_notes"] = [n for n in doc["spelling_notes"] if n]
-    return spelling, apply_changes(doc["htr"], changes)
+    return spelling, apply_changes(base, changes)
+
+
+def edit_text(doc, text, options, progress=None, spelling=None):
+    """A hand edit: kept in the history, the spelling checked again on the edited text (the lines written by hand
+    are not corrected by themselves), then parsed. -> (doc, spelling state)"""
+    doc = dict(doc)
+    before = doc["history"][doc["position"]]
+    history = doc["history"][:doc["position"] + 1]
+    if text != history[-1]:
+        history.append(text)
+    doc.update(history=history, position=len(history) - 1)
+    doc["log"] = doc.get("log", []) + [log_entry("c_edit")]
+    keep_alive(doc)
+    spelling, corrected = check_spelling(doc, options, progress, text=text, protect=edited_words(before, text),
+                                         refused=person_refused(spelling or {}))
+    doc["log"] = doc["log"] + [log_entry("c_respell")]
+    if corrected != text:   # the corrections of the rules: one more version (↶ gives the edit as typed)
+        doc["history"] = doc["history"] + [corrected]
+        doc["position"] = len(doc["history"]) - 1
+    return parse_text(doc, corrected, options), spelling
 
 
 def start_document(image_path, name, options, threshold, device, segmentation_model, recognition_model,
@@ -858,20 +920,26 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                                                     console_html(doc, limit)],
                           [doc_state, zoom_state, threshold], [segmentation_view, text_view, console])
 
-        def on_edit(doc, editing_text, view, ner, french_ner, translate, spellcheck, limit, zoom):
+        def on_edit(doc, editing_text, view, spelling, ner, french_ner, translate, spellcheck, limit, zoom,
+                    progress=gr.Progress()):
             if not doc:
                 raise gr.Error("Import a scan first.")
             if view != "edit":   # start editing
-                return [doc, gr.update(value=doc["history"][doc["position"]]), *render(doc, zoom, limit),
-                        *mode("edit")]
+                return [doc, gr.update(value=doc["history"][doc["position"]]), *spelling_review(spelling),
+                        *render(doc, zoom, limit), *mode("edit")]
             text = editing_text if editing_text.endswith("\n") else editing_text + "\n"
             if not text.strip():
                 raise gr.Error("The transcription is empty.")
-            doc = set_text(doc, text, options_of(ner, french_ner, translate, spellcheck), "c_edit")
-            return [doc, gr.update(), *render(doc, zoom, limit), *mode("text")]
+            if text == doc["history"][doc["position"]]:   # nothing changed: no new check
+                return [doc, gr.update(), *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
+            # the spelling is checked again on the edited text (only the new lines go to the model)
+            doc, spelling = edit_text(doc, text, options_of(ner, french_ner, translate, spellcheck), progress,
+                                      spelling)
+            return [doc, gr.update(), *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
 
-        edit_button.click(on_edit, [doc_state, text_edit, view_state, *option_inputs, threshold, zoom_state],
-                          [doc_state, text_edit, *panels, *modes])
+        edit_button.click(on_edit, [doc_state, text_edit, view_state, spelling_state, *option_inputs, threshold,
+                                    zoom_state],
+                          [doc_state, text_edit, *review_outputs, *panels, *modes])
 
         def on_spelling_button(doc, view, spelling):
             if not doc:

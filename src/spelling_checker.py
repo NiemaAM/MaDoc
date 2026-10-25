@@ -775,6 +775,24 @@ def ollama_json(system, payload, model=None):
     return result
 
 
+_line_answers = {}     # (model, line) -> the model's version of the line, for the last documents
+LINE_CACHE_SIZE = 2000
+
+
+def ask_model_cached(lines, model=None):
+    """ask_model, sending only the lines it has not answered yet: after a hand edit, only the edited lines go to
+    the model (seconds instead of a whole certificate). A line is answered the same in any document: the model
+    corrects spelling line by line."""
+    model = model or MODEL
+    missing = list(dict.fromkeys(line for line in lines if (model, line) not in _line_answers))
+    if missing:
+        for line, answer in zip(missing, ask_model(missing, model)):
+            if len(_line_answers) >= LINE_CACHE_SIZE:
+                _line_answers.pop(next(iter(_line_answers)))
+            _line_answers[(model, line)] = answer
+    return [_line_answers[(model, line)] for line in lines]
+
+
 def ask_model(lines, model=None):
     """Lines -> the model's corrected lines, one per input line (see align_answer), or raise."""
     payload = {"lines": [{"id": n, "text": line} for n, line in enumerate(lines, 1)]}
@@ -1139,7 +1157,7 @@ def propose(text, model=None):
         return [], notes
     proposed = None
     try:
-        proposed = ask_model([lines[i] for i in positions], model)
+        proposed = ask_model_cached([lines[i] for i in positions], model)
     except PermissionError as e:
         notes.append(f"spelling model skipped: {e}")
     except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
@@ -1319,9 +1337,10 @@ PLACE_PREFIX_WORDS = frozenset(ar_key(w) for w in "اولاد أولاد بني 
 
 
 def label_key(word):
-    """The key of a label word, without a glued و / ب ("بجماعة" -> "جماعة")."""
+    """The key of a label word, without a glued و / ب ("بجماعة" -> "جماعة", "بحي" -> "حي")."""
     key = ar_key(word)
-    if len(key) > 2 and key[0] in PREFIXES and (key[1:] in PLACE_LABELS or key[1:] in NAME_LABELS):
+    if len(key) > 2 and key[0] in PREFIXES and (key[1:] in PLACE_LABELS or key[1:] in NAME_LABELS
+                                                  or key[1:] in STREET_LABELS):
         return key[1:]
     return key
 
@@ -1346,6 +1365,22 @@ def get_places():
     """Arabic places of cities.json / places.json as written, by key (ar_key)."""
     from common import places_data
     return {ar_key(arabic): surface(arabic) for arabic in places_data if surface(arabic)}
+
+
+# labels after which a street or neighbourhood name is written
+STREET_LABELS = frozenset(ar_key(w) for w in "حي زنقة شارع درب تجزئة إقامة اقامة عمارة الشطر".split())
+
+
+@lru_cache(maxsize=None)
+def user_words():
+    """The words of dictionaries/spelling_words.txt (neighbourhoods, streets ... of the person's documents)."""
+    path = Path(BASE_DIR) / "spelling_words.txt"
+    if not path.is_file():
+        return frozenset()
+    words = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        words.update(surface(w) for w in line.split("#", 1)[0].split() if len(surface(w)) >= 3)
+    return frozenset(words)
 
 
 @lru_cache(maxsize=None)
@@ -1423,8 +1458,12 @@ def value_word_suggestions(lines, protected_by_line, changes):
             if k and ar_key(units[k - 1]["text"]) in PLACE_PREFIX_WORDS:
                 continue   # the second word of a compound place ("اولاد فارس" is not "فاس")
             new, source, accepted, options = None, None, False, []
-            address = one_per_key(w for w in ADDRESS_WORDS if abs(len(w) - len(word)) <= 1
-                                  and edit_distance(unit_key(word), unit_key(w)) <= (1 if len(w) < 7 else 2))
+            # the name after "حي" / "زنقة" / "شارع" ... is a name ("حي القاومة" is "المقاومة", not "القروية"):
+            # only the words of spelling_words.txt (the person's own neighbourhoods and streets) may replace it
+            after_street = k > 0 and label_key(units[k - 1]["text"]) in STREET_LABELS
+            words_of_address = user_words() if after_street else ADDRESS_WORDS | user_words()
+            address = one_per_key(w for w in words_of_address if abs(len(w) - len(word)) <= 1
+                                  and edit_distance(unit_key(word), unit_key(w)) <= 1)
             if len(address) == 1 and len(word) >= 4:
                 new, source, accepted = address[0], "address", True
             elif len(written.get(unit_key(word), [])) > 1:
@@ -1863,7 +1902,9 @@ def address_flags(lines, changes):
     """The parents' address and the declarant's address: the same street / house number twice. A number
     that differs ("الزنقة 11" / "الزنقة 12") is flagged on both (digits are never corrected: the scan tells
     which one is right)."""
-    stop = {ar_key(w) for w in ("حرفتها", "حرفته", "بناءا", "بناء", "وحرر", "حرر", "تحت")}
+    # the parents' address may go on after the mother's job line ("حرفتها : ربة البيت." / "الزنقة: 19"): only
+    # the declaration ends it
+    stop = {ar_key(w) for w in ("بناءا", "بناء", "وحرر", "حرر", "تحت")}
     parents = address_numbers(lines, {ar_key("الساكنان")}, stop | {ar_key("الساكن")})
     declaration_lines = next((i for i, l in enumerate(lines) if re.search(r"بناء", l)), None)
     if not parents or declaration_lines is None:
@@ -1917,6 +1958,30 @@ def glued_labels(lines, changes):
                 out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]],
                             "new": [best[1], best[2]], "accepted": True, "reason": "", "source": "split",
                             "context": "a label glued to the word before it"})
+    return out + glued_lineage(lines, changes)
+
+
+def glued_lineage(lines, changes):
+    """"و والدتها مليكة كنوبست الكبير": "بنت" glued to the family name ("كنو" + "بست"). Only on the mother's line
+    (after "والدته" / "والدتها") when it has no "بنت": the form always writes the mother's lineage. Applied."""
+    out = []
+    for line_index, line in enumerate(lines):
+        units = line_units(line)
+        keys = [ar_key(u["text"]) for u in units]
+        start = next((k + 1 for k, key in enumerate(keys) if key in (ar_key("والدته"), ar_key("والدتها"))), None)
+        if start is None or ar_key("بنت") in keys[start:] or ar_key("ابنة") in keys[start:]:
+            continue
+        for k in range(start + 1, len(units) - 1):   # not the first name, and a name must follow
+            word = surface(units[k]["text"])
+            if len(word) < 6 or is_known(word) or covered(changes, line_index, k):
+                continue
+            tail = word[-3:]
+            if tail[0] == "ب" and edit_distance(tail, "بنت") <= 1 and not is_known(units[k + 1]["text"]):
+                drop_refused_model_changes(changes, line_index, k)
+                out.append({"line": line_index, "start": k, "end": k + 1, "old": [units[k]["text"]],
+                            "new": [word[:-3], "بنت"], "accepted": True, "reason": "", "source": "split",
+                            "context": "the mother's lineage glued to her family name"})
+                break
     return out
 
 

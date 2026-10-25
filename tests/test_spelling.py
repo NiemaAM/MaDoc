@@ -150,6 +150,7 @@ def test_one_bad_line_does_not_cancel_the_others(ollama):
     text, notes = sc.correct_text(damaged)
     assert "موفق" not in text and text.count("\n") == damaged.count("\n")
     ollama.answer = lambda lines: "not json"
+    sc._line_answers.clear()
     text, notes = sc.correct_text(damaged)
     # the model's answer is unusable, the rules alone still fix the words of the form
     assert "unusable answer" in notes[0] and "موفق" not in text
@@ -452,6 +453,7 @@ def test_job_suggestions_without_and_with_the_model(ollama):
     job = next(c for c in changes if c.get("source") == "jobs.json")
     assert job["old"] == ["صباخ"] and job["options"] == [["صباغ"], ["طباخ"]] and not job["accepted"]
     ollama.answer = lambda lines: [l.replace("صباخ", "طباخ") for l in lines]   # the model chooses: first
+    sc._line_answers.clear()                                 # another model: its answers are not the first one's
     changes, _ = sc.propose(text)
     job = next(c for c in changes if c.get("source") == "jobs.json")
     assert job["options"][0] == ["طباخ"] and len([c for c in changes if c["old"] == ["صباخ"]]) == 1
@@ -997,3 +999,74 @@ def test_the_child_family_name_and_the_declarant(monkeypatch):
     record, _ = sc.record_of(sc.apply_changes(LAHNICHE_DOCUMENT, changes,
                                               {i for i, c in enumerate(changes) if c["accepted"] or c is year}))
     assert record["DATENAISSPEREFR"] == "1966-03-02"
+
+
+EMPTY_MINUTE_DOCUMENT = (
+    "رسم ولادة رقم: 06\n"
+    "في يوم : عاشر ذو القعدة\n"
+    "عام: ألف و أربعمائة و أربعة و عشرين هجرية\n"
+    "موافق ثالث يناير سنة ألفين و أربعة ميلادية.\n"
+    "و الدقيقة\n"
+    "على الساعة العشرين\n"
+    "ولد ب حي المناومة الزنقة: 19 الرقم: 31 مدينة خريبڭة.\n"
+    "PRENOM IMANE\n"
+    "NOM HANNOUR\n"
+    "الإسم الشخصي: ايمان\n"
+    "أنثى\n"
+    "الإسم العائلي: ينور\n"
+    "من والدها حسن هنور بن العربي جنسيته :مغربية\n"
+    "المولود ب جماعة خريبڭة الحضرية اقليم خريبڭة.\n"
+    "في : تاسع و عشري جمادى الثانية عام ألف و ثلاثمائة و تسعة و سبعين هجرية.\n"
+    "موافق ثلاثين دجنبر سنة ألف و تسعمائة و تسعة و خمسين ميلادية.\n"
+    "و والدتها مليكة كنوبست الكبير.\n"
+    "المولودة بجماعة كنير اقليم سطات.\n"
+    "حرفته سائق.\n"
+    "جنسيتها: مغربية\n"
+    "في: عام ألف و ثلاثمائة و ثمانية و ثمانين هجرية\n"
+    "موافق لسنةة ألف و تسعمائة و تسعة و ستين ميلادية\n"
+    "الساكنان: حي المعاومة.\n"
+    "حرفتها : ربة البيت.\n"
+    "الزنقة: 19 الرقم: 31 مدينة خريبڭة.\n"
+    "بناءا على ما صرح به السيد حسن هنور (والدها) تحت عدد : 06 عمره خمسة و أربعون\n"
+    "سنة حرفته سائق جنسيته مغربية الساكن بحي القاومة الزنقة: 1 الرقم : 31 خريبڭة.\n"
+    "وحرر في رابع عشر ذو القعدة عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
+    "موافق سابع يناير سنة ألفين و أربعة ميلادية.\n"
+    "من طرفنا نحن لحسن شميطي موظف جماعي\n"
+    "و بعد تلاوة الرسم على المصرح (و وقعه معنا) وضابط الحالة المدنية بالتفويض٪\n"
+    "توقيع المصرح:\n"
+)
+
+
+def test_an_empty_minute_and_the_address(monkeypatch):
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    record, issues = sc.record_of(EMPTY_MINUTE_DOCUMENT)
+    assert (record["HEURENAISS"], record["MINNAISS"]) == (20, "")       # "و الدقيقة" alone: empty, not the hour
+    assert [i["level"] for i in issues if i["field"] == "MINNAISS"] == ["warning"]
+    changes, _ = sc.propose(EMPTY_MINUTE_DOCUMENT)
+    by_old = {" ".join(c["old"]): c for c in changes}
+    assert "القاومة" not in by_old                                     # a neighbourhood, not "القروية"
+    assert by_old["كنوبست"]["new"] == ["كنو", "بنت"] and by_old["كنوبست"]["accepted"]
+    assert by_old["19"]["check"] and by_old["19"]["new"] == ["1"]         # the address after the mother's job
+    record, _ = sc.record_of(sc.apply_changes(EMPTY_MINUTE_DOCUMENT, changes))
+    assert record["NOMMEREAR"] == "بنت الكبير" and record["NOMAR"] == "هنور"
+
+
+def test_the_neighbourhoods_of_spelling_words(monkeypatch):
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(sc, "user_words", lambda: frozenset({"المقاومة"}))
+    changes, _ = sc.propose(EMPTY_MINUTE_DOCUMENT)
+    fixed = sorted(" ".join(c["old"]) for c in changes if c["new"] == ["المقاومة"] and c["accepted"])
+    assert fixed == ["القاومة", "المعاومة", "المناومة"]
+
+
+def test_only_new_lines_go_to_the_model(ollama):
+    """After a hand edit, the lines the model already answered are not sent again."""
+    _, damaged = damaged_sample()
+    ollama.answer = lambda lines: [l.replace("موفق", "موافق") for l in lines]
+    sc.propose(damaged)
+    first = len(json.loads(ollama.requests[-1]["messages"][1]["content"])["lines"])
+    edited = damaged.replace("الساكنان", "الساكنان المعدلان", 1)
+    changes, _ = sc.propose(edited)
+    sent = json.loads(ollama.requests[-1]["messages"][1]["content"])["lines"]
+    assert first > 5 and len(sent) == 1 and "المعدلان" in sent[0]["text"]
+    assert any(c["old"] == ["موفق"] and c["accepted"] for c in changes)   # the cached answers still count

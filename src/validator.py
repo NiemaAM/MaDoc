@@ -132,7 +132,8 @@ def validate(result, check_translation=True):
         elif field in ("HEURENAISS", "MINNAISS"):
             limit = 23 if field == "HEURENAISS" else 59
             if value == "":
-                warning(field, "empty")
+                # "و الدقيقة" with nothing after it: the scan has no value (often an exact hour), or it was not read
+                warning(field, "not written on the certificate (or not read): check the scan")
             elif not isinstance(value, int) or isinstance(value, bool):
                 error(field, f"must be an integer, got {value!r} (conversion failed?)")
             elif not 0 <= value <= limit:

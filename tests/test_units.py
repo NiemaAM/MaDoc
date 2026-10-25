@@ -21,6 +21,7 @@ import segmentation
 import translator
 from common import read_text_file
 
+ROOT = Path(__file__).resolve().parents[1]
 TEXT = "رسم ولادة رقم 01\nفي يوم ثالث و عشري شوال\n"
 
 
@@ -666,3 +667,64 @@ def test_the_models_are_not_asked_twice_for_the_same_text(monkeypatch):
     classificator.classify("نص")
     classificator.classify("نص")
     assert calls == ["نص"]
+
+
+@pytest.mark.parametrize("old, new, field", [
+    ("على الساعة : السادسة عشرة", "على الساعة :", "HEURENAISS"),
+    ("و الدقيقة : الثلاثين.", "و الدقيقة :", "MINNAISS"),
+    ("الإسم الشخصي : حفصة", "الإسم الشخصي :", "PRENOMAR"),
+    ("الإسم العائلي : الكتاني", "الإسم العائلي :", "NOMAR"),
+    ("ولد ب: محج المستشفى مدينة خريبڭة.", "ولد ب:", "LIEUNAISS"),
+    ("جنسيته : مغربية.", "جنسيته :", "NATIONALITEPERE"),
+    ("حرفته : تقني", "حرفته :", "PROFESSIONPERE"),
+    ("حرفتها : ربة البيت.", "حرفتها :", "PROFESSIONMERE"),
+    ("من طرفنا نحن فؤاد السعدي موظف جماعي", "من طرفنا نحن", "EMPLOYECREANT"),
+])
+def test_an_empty_value_stays_empty(old, new, field):
+    """A label with nothing after it: the field is empty, the next label is not read as its value, and the
+    other fields are read as before (the child's nationality comes from both parents: it may go too)."""
+    import parser as record_parser
+    text = (ROOT / "samples" / "3.txt").read_text(encoding="utf-8")
+    assert old in text
+    full = record_parser.parse(text, None)
+    empty = record_parser.parse(text.replace(old, new), None)
+    assert empty[field] == ""
+    assert {k for k in full if full[k] != empty[k]} <= {field, "NATIONALITE"}
+
+
+def test_app_a_hand_edit_checks_the_spelling_again(tmp_path, monkeypatch):
+    """After a hand edit the spelling is checked again on the edited text: the words typed by hand are only
+    proposed (orange), a correction refused earlier in the review stays refused."""
+    pytest.importorskip("gradio")
+    import app
+    import spelling_checker as sc
+    from PIL import Image
+    text = (ROOT / "samples" / "6.txt").read_text(encoding="utf-8")
+    lines = [{"text": l, "confidence": 0.9, "polygon": [], "baseline": []} for l in text.rstrip("\n").split("\n")]
+    monkeypatch.setattr(app, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(app, "segment_image", lambda *a, **k: "<xml/>")
+    monkeypatch.setattr(app, "recognize_lines", lambda *a, **k: [dict(l) for l in lines])
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")            # rules only
+    scan = tmp_path / "scan.jpg"
+    Image.new("RGB", (40, 20)).save(scan)
+    options = app.options_of(False, False, False, True)
+    doc, spelling = app.start_document(str(scan), "scan.jpg", options, 0.8, "cpu", "m1", "m2")
+    fix = next(i for i, c in enumerate(spelling["changes"]) if c["old"] == ["البيتت"])
+    assert "البيتت" not in doc["history"][-1]                              # applied by the rules
+    spelling = {**spelling, "accepted": [i for i in spelling["accepted"] if i != fix]}   # the person refuses it
+    doc = app.set_text(doc, app.apply_changes(spelling["text"], spelling["changes"], set(spelling["accepted"])),
+                       options, "c_spelling")
+    assert "البيتت" in doc["history"][-1]
+    # a hand edit on another line, with a typo in a word of the form
+    current = doc["history"][-1]
+    line = next(l for l in current.split("\n") if l.startswith("موافق"))
+    edited = current.replace(line, line.replace("موافق", "موفق", 1), 1)
+    doc, spelling = app.edit_text(doc, edited, options, spelling=spelling)
+    final = doc["history"][doc["position"]]
+    assert "البيتت" in final                                               # still refused
+    assert "موفق" in final                                                 # typed by hand: not changed by itself
+    typed = next(c for c in spelling["changes"] if c["old"] == ["موفق"])
+    assert typed["check"] and not typed["accepted"] and typed["new"] == ["موافق"]
+    refused = next(c for c in spelling["changes"] if c["old"] == ["البيتت"])
+    assert not refused["accepted"] and "refused" in refused["reason"]
+    assert any(entry[1] == "c_respell" for entry in doc["log"])

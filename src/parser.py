@@ -166,7 +166,7 @@ def strip_attached_b(place):
 
 # words that end a profession when the profession is not in the jobs dictionary
 JOB_STOP = (
-    r"(?=\s+(?:المولود|جنسيت|في\s|(?:ال)?موا?فق|حرفت|مهنت|الساكن|الزنقة|الرقم|زنقة|رقم|"
+    r"(?=\s*(?<!\S)(?:المولود|جنسيت|في\s|(?:ال)?موا?فق|حرفت|مهنت|الساكن|الزنقة|الرقم|زنقة|رقم|"
     r"شارع|درب|دوار|مدينة|بناء|توقيع|و\s*والد)|\s*$)"
 )
 
@@ -183,7 +183,7 @@ def extract_job(label, text):
         if ar_key(" ".join(tokens[:n])) in lookup:
             return " ".join(tokens[:n])
     # 2. otherwise read up to the next known label / address word
-    return extract(r"^(.+?)" + JOB_STOP, tail)
+    return extract(r"^(.*?)" + JOB_STOP, tail)   # empty when the next label follows ("حرفته : و والدته")
 
 
 def trim_nationality(value):
@@ -199,25 +199,25 @@ def trim_nationality(value):
 def parse_parent(block, nat_label, born_label, job_label, core=""):
     """Parse a father or mother block (labels differ only by gender)."""
     lineage = r"(?:ابن|بن|بنت|ابنة)"
-    stop = r"(?=\s+جنسيت|\s+المولود|\s+في\s|\s+(?:ال)?موا?فق|\s+حرفت|\s+مهنت|\s*$)"
+    stop = r"(?=\s*(?<!\S)جنسيت|\s*(?<!\S)المولود|\s*(?<!\S)في\s|\s*(?<!\S)(?:ال)?موا?فق|\s*(?<!\S)حرفت|\s*(?<!\S)مهنت|\s*$)"
     return {
         # Everything before بن/بنت (or before the nationality when there is no lineage word)
         "first": extract_any([
-            r"^(.+?)(?=\s+" + lineage + r"(?:\s|$))",
-            r"^(.+?)(?=\s+جنسيت|\s+المولود|\s*$)",
+            r"^(.*?)(?=\s*(?<!\S)" + lineage + r"(?:\s|$))",
+            r"^(.*?)(?=\s*(?<!\S)جنسيت|\s*(?<!\S)المولود|\s*$)",
         ], block),
         # بن/بنت and what comes after
         "last": extract(
             r"(?<!\S)(" + lineage + r"\s+.+?)" + stop, block
         ),
         "nationality": extract(
-            nat_label + r"\s+(.+?)(?=\s+المولود|\s+في\s|\s+(?:ال)?موا?فق|\s+حرفت|\s+مهنت|\s*$)", block
+            nat_label + r"\s+(.*?)(?=\s*(?<!\S)المولود|\s*(?<!\S)في\s|\s*(?<!\S)(?:ال)?موا?فق|\s*(?<!\S)حرفت|\s*(?<!\S)مهنت|\s*$)", block
         ),
         "birthplace": extract(
-            born_label + r"\s*(?:" + BIRTH_PREP + r")?(.+?)(?=\s+جنسيت|\s+في\s|\s+(?:ال)?موا?فق|\s+حرفت|\s+مهنت|\s*$)", block
+            born_label + r"\s*(?:" + BIRTH_PREP + r")?(.*?)(?=\s*(?<!\S)جنسيت|\s*(?<!\S)في\s|\s*(?<!\S)(?:ال)?موا?فق|\s*(?<!\S)حرفت|\s*(?<!\S)مهنت|\s*$)", block
         ),
-        "date_ar": extract(r"(?<!\S)في\s+(.+?)(?=\s+هجر)", block),
-        "date_fr": extract(r"(?:ال)?موا?فق\s*(.+?)(?=\s+ميلا)", block),
+        "date_ar": extract(r"(?<!\S)في\s+(.*?)(?=\s*(?<!\S)هجر)", block),
+        "date_fr": extract(r"(?:ال)?موا?فق\s*(.*?)(?=\s*(?<!\S)ميلا)", block),
         # the job is searched in the block first, then in the whole parents zone
         # (some scans put "حرفته" / "حرفتها" far from its parent block)
         "job": extract_job(job_label, block) or extract_job(job_label, core),
@@ -663,21 +663,21 @@ def find_zones(txt):
     """Cleaned text -> (child, father, mother, administration) zones, cut with the fixed labels of the form."""
     # 1. extract child info from the first في يوم to من والدها/والده
     child_zone = find_zone([
-        r"(?:^|\s)(في\s+يوم\s+.*?)(?=\s+" + FATHER_MARK + r"(?:\s|$))",
-        r"(?:^|\s)(في\s+يوم\s+.*?)(?=\s+من\s+والد|\s+" + MOTHER_MARK + r"(?:\s|$)|\s+الساكن|\s*$)",
+        r"(?:^|\s)(في\s+يوم\s+.*?)(?=\s*(?<!\S)" + FATHER_MARK + r"(?:\s|$))",
+        r"(?:^|\s)(في\s+يوم\s+.*?)(?=\s*(?<!\S)من\s+والد|\s*(?<!\S)" + MOTHER_MARK + r"(?:\s|$)|\s*(?<!\S)الساكن|\s*$)",
     ], txt)
     # 2. extract father info from من والدها/والده to و والدته/و والدتها
     father_zone = find_zone([
-        FATHER_MARK + r"\s+(.*?)(?=\s+" + MOTHER_MARK + r"(?:\s|$)|\s+الساكن|\s*$)"
+        FATHER_MARK + r"\s+(.*?)(?=\s*(?<!\S)" + MOTHER_MARK + r"(?:\s|$)|\s*(?<!\S)الساكن|\s*$)"
     ], txt)
     # 3. extract mother info from و والدته/و والدتها to الساكن/الساكنان
     mother_zone = find_zone([
-        r"(?:^|\s)" + MOTHER_MARK + r"\s+(.*?)(?=\s+الساكن|\s+بناء[اأ]?\s+على|\s*$)"
+        r"(?:^|\s)" + MOTHER_MARK + r"\s+(.*?)(?=\s*(?<!\S)الساكن|\s*(?<!\S)بناء[اأ]?\s+على|\s*$)"
     ], txt)
     # 4. extract administrative info from الساكن/الساكنان to توقيع المصرح
     administrative_zone = find_zone([
-        r"(?:^|\s)(الساكن\w*\s+.*?)(?=\s+توقيع\s*المصرح|\s*$)",
-        r"(?:^|\s)(بناء[اأ]?\s+على.*?)(?=\s+توقيع\s*المصرح|\s*$)",
+        r"(?:^|\s)(الساكن\w*\s+.*?)(?=\s*(?<!\S)توقيع\s*المصرح|\s*$)",
+        r"(?:^|\s)(بناء[اأ]?\s+على.*?)(?=\s*(?<!\S)توقيع\s*المصرح|\s*$)",
     ], txt)
     return child_zone, father_zone, mother_zone, administrative_zone
 
@@ -702,21 +702,23 @@ def parse_with_notes(raw_text, ner=None):
     # Child
     parsed["NUMACTE"] = extract(r"رسم\s+(?:ال)?ولادة\s+رقم\s*(\d+)", txt)
     parsed["DATENAISSAR"] = extract(
-        r"في\s+يوم\s+(.+?)(?=\s+(?:ال)?موا?فق|\s+على\s+الساعة)", child
+        r"في\s+يوم\s+(.*?)(?=\s*(?<!\S)(?:ال)?موا?فق|\s*(?<!\S)على\s+الساعة)", child
     )
-    parsed["DATENAISSFR"] = extract(r"(?:ال)?موا?فق\s*(.+?)(?=\s+ميلا)", child)
+    parsed["DATENAISSFR"] = extract(r"(?:ال)?موا?فق\s*(.*?)(?=\s*(?<!\S)ميلا)", child)
     parsed["HEURENAISS"] = extract(
-        r"على\s+الساعة\s+(.*?)(?=\s+و\s*الدقيقة|\s*(?<!\S)" + BORN_VERB + r"\s)", child
+        r"على\s+الساعة\s+(.*?)(?=\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)" + BORN_VERB + r"\s)", child
     )
     parsed["MINNAISS"] = extract(
-        r"و\s*الدقيقة\s*(.*?)(?=\s+على\s+الساعة|\s*(?<!\S)" + BORN_VERB + r"\s|\s+ال[إأا]سم|\s*$)", child
+        r"و\s*الدقيقة\s*(.*?)(?=\s*(?<!\S)على\s+الساعة|\s*(?<!\S)" + BORN_VERB + r"\s|\s*(?<!\S)ال[إأا]سم|\s*$)", child
     )
     parsed["LIEUNAISS"] = extract_any([
-        r"(?<!\S)" + BORN_VERB + r"\s+" + BIRTH_PREP + r"(.*?)(?=\s+و\s*الدقيقة|\s+ال[إأا]سم\s+الشخصي|\s+PRENOM\b|\s+NOM\b|\s+جنسيت)",
-        r"(?<!\S)" + BORN_VERB + r"\s+(.*?)(?=\s+و\s*الدقيقة|\s+ال[إأا]سم\s+الشخصي|\s+PRENOM\b|\s+NOM\b|\s+جنسيت)",
+        r"(?<!\S)" + BORN_VERB + r"\s+" + BIRTH_PREP + r"(.*?)(?=\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
+        r"(?<!\S)" + BORN_VERB + r"\s+(.*?)(?=\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
     ], child)
+    if parsed["LIEUNAISS"] in ("ب", "في"):
+        parsed["LIEUNAISS"] = ""   # "ولد ب:" with nothing after it: the preposition is not a place
     parsed["PRENOMAR"] = extract(
-        r"ال[إأا]سم\s+الشخصي\s+(.*?)(?=\s+ذكر(?:\s|$)|\s+[أا]نثى|\s+PRENOM\b|\s+جنسيت|\s+ال[إأا]سم\s+العائلي|\s*$)",
+        r"ال[إأا]سم\s+الشخصي\s+(.*?)(?=\s*(?<!\S)ذكر(?:\s|$)|\s*(?<!\S)[أا]نثى|\s*(?<!\S)PRENOM\b|\s*(?<!\S)جنسيت|\s*(?<!\S)ال[إأا]سم\s+العائلي|\s*$)",
         child,
     )
     parsed["SEXE"] = extract(r"(?<!\S)(ذكر|[أا]نثى)(?!\S)", child)
@@ -727,7 +729,7 @@ def parse_with_notes(raw_text, ner=None):
         elif re.search(r"(?<!\S)(?:ولد|والد)(?!\S)", child):
             parsed["SEXE"] = "ذكر"
     parsed["PRENOM"] = latin_field("PRENOM", txt) or extract(
-        r"\bPRENOM\s+(.+?)(?=\s+ذكر(?:\s|$)|\s+[أا]نثى|\s+جنسيت|\s+ال[إأا]سم\s+العائلي|\s+NOM\b|\s*$)", child
+        r"\bPRENOM\s+(.*?)(?=\s*(?<!\S)ذكر(?:\s|$)|\s*(?<!\S)[أا]نثى|\s*(?<!\S)جنسيت|\s*(?<!\S)ال[إأا]سم\s+العائلي|\s*(?<!\S)NOM\b|\s*$)", child
     )
     # the nationality label agrees with the child's gender (جنسيتها = girl, جنسيته = boy);
     # for a girl, "جنسيته" in the child zone is the father's nationality
@@ -739,20 +741,20 @@ def parse_with_notes(raw_text, ner=None):
     else:
         child_nat_label = r"جنسيت(?:ه|ها)"
     nat_stop = (
-        r"(?=\s+ال[إأا]سم\s+العائلي|\s+NOM\b|\s+PRENOM\b|\s+ذكر(?:\s|$)|\s+[أا]نثى|\s+جنسيت|\s*$)"
+        r"(?=\s*(?<!\S)ال[إأا]سم\s+العائلي|\s*(?<!\S)NOM\b|\s*(?<!\S)PRENOM\b|\s*(?<!\S)ذكر(?:\s|$)|\s*(?<!\S)[أا]نثى|\s*(?<!\S)جنسيت|\s*$)"
     )
     parsed["NATIONALITE"] = extract(child_nat_label + r"\s+(.+?)" + nat_stop, child)
     parsed["NOMAR"] = extract(
-        r"ال[إأا]سم\s+العائلي\s+(.+?)(?=\s+NOM\b|\s+PRENOM\b|\s+جنسيت|\s*$)", child
+        r"ال[إأا]سم\s+العائلي\s+(.*?)(?=\s*(?<!\S)NOM\b|\s*(?<!\S)PRENOM\b|\s*(?<!\S)جنسيت|\s*$)", child
     )
-    parsed["NOM"] = latin_field("NOM", txt) or extract(r"(?<![A-Za-z])NOM\s+(.+?)(?=\s+جنسيت|\s*$)", child)
+    parsed["NOM"] = latin_field("NOM", txt) or extract(r"(?<![A-Za-z])NOM\s+(.*?)(?=\s*(?<!\S)جنسيت|\s*$)", child)
     # Father
     # zones from each parent marker to "بناء على" (used to find misplaced professions)
     father_core = extract(
-        FATHER_MARK + r"\s+(.*?)(?=\s+بناء[اأ]?\s+على|\s*$)", txt
+        FATHER_MARK + r"\s+(.*?)(?=\s*(?<!\S)بناء[اأ]?\s+على|\s*$)", txt
     )
     mother_core = extract(
-        r"(?:^|\s)" + MOTHER_MARK + r"\s+(.*?)(?=\s+بناء[اأ]?\s+على|\s*$)", txt
+        r"(?:^|\s)" + MOTHER_MARK + r"\s+(.*?)(?=\s*(?<!\S)بناء[اأ]?\s+على|\s*$)", txt
     )
     father_info = parse_parent(father, r"جنسيته", r"المولود(?:ة)?", r"(?:حرفته|مهنته)", father_core)
     if sex_key == "انثي" and not father_info["nationality"]:
@@ -760,7 +762,7 @@ def parse_with_notes(raw_text, ner=None):
         father_info["nationality"] = extract(r"جنسيته\s+(.+?)" + nat_stop, child)
     # a "جنسيتها" printed in the father zone belongs to the girl (if hers is missing) or to the mother
     feminine_nationality = extract(
-        r"جنسيتها\s+(.+?)(?=\s+المولود|\s+في\s|\s+حرفت|\s+مهنت|\s*$)", father
+        r"جنسيتها\s+(.*?)(?=\s*(?<!\S)المولود|\s*(?<!\S)في\s|\s*(?<!\S)حرفت|\s*(?<!\S)مهنت|\s*$)", father
     )
     used_for_child = False
     if sex_key == "انثي" and not parsed["NATIONALITE"] and feminine_nationality:
@@ -784,7 +786,7 @@ def parse_with_notes(raw_text, ner=None):
     # there. It is the mother's when the father already has his own, otherwise it is the father's.
     if not parsed["NATIONALITEMERE"]:
         masculine = extract(
-            r"(?<!\S)جنسيته\s+(.+?)(?=\s+المولود|\s+في\s|\s+(?:ال)?موا?فق|\s+حرفت|\s+مهنت|\s+جنسيت|\s*$)", mother
+            r"(?<!\S)جنسيته\s+(.*?)(?=\s*(?<!\S)المولود|\s*(?<!\S)في\s|\s*(?<!\S)(?:ال)?موا?فق|\s*(?<!\S)حرفت|\s*(?<!\S)مهنت|\s*(?<!\S)جنسيت|\s*$)", mother
         )
         if masculine and parsed["NATIONALITEPERE"]:
             parsed["NATIONALITEMERE"] = masculine
@@ -809,7 +811,7 @@ def parse_with_notes(raw_text, ner=None):
         notes.append(f"NATIONALITE: not written, both parents are {parsed['NATIONALITEPERE']!r}: same for the child")
     # administartion
     parsed["ADRESSEPARENT"] = extract(
-        r"الساكن\w*\s+(.+?)(?=\s+بناء[اأ]?\s+على|\s*$)", administrative
+        r"الساكن\w*\s+(.*?)(?=\s*(?<!\S)بناء[اأ]?\s+على|\s*$)", administrative
     )
     # an address piece printed after the mother's profession (before "الساكنان") is the end of the address
     if mother_info["job"]:
@@ -828,7 +830,7 @@ def parse_with_notes(raw_text, ner=None):
                 re.sub(label + r"\s+" + re.escape(job) + r"(?=\s|$)", " ", parsed["ADRESSEPARENT"])
             )
     parsed["TEXTEDECLA"] = extract(
-        r"(بناء[اأ]?\s+على.+?)(?=\s+و\s*حر\w{0,3}\s+في|\s*$)", administrative
+        r"(بناء[اأ]?\s+على.+?)(?=\s*(?<!\S)و\s*حر\w{0,3}\s+في|\s*$)", administrative
     )
     # the address is written twice (after "الساكنان" and inside the declaration): a difference is a typo
     # in one of them, the first one is kept and the difference is noted
@@ -839,10 +841,10 @@ def parse_with_notes(raw_text, ner=None):
         )
     # the declaration dates are read after "وحرر في" so they are never mixed with other dates
     declaration_tail = extract(r"و\s*حر\w{0,3}\s+في\s+(.*)", administrative)
-    parsed["DATEDECLAAR"] = extract(r"^(.+?)(?=\s+هجر)", declaration_tail)
-    parsed["DATEDECLAFR"] = extract(r"(?:ال)?موا?فق\s*(.+?)(?=\s+ميلا)", declaration_tail)
+    parsed["DATEDECLAAR"] = extract(r"^(.*?)(?=\s*(?<!\S)هجر)", declaration_tail)
+    parsed["DATEDECLAFR"] = extract(r"(?:ال)?موا?فق\s*(.*?)(?=\s*(?<!\S)ميلا)", declaration_tail)
     parsed["EMPLOYECREANT"] = extract(
-        r"من\s+طرفنا\s+نحن\s+(.+?)(?=\s+و\s*بعد\s+تلاوة|\s+و\s*ضابط|\s*$)", administrative
+        r"من\s+طرفنا\s+نحن\s+(.*?)(?=\s*(?<!\S)و\s*بعد\s+تلاوة|\s*(?<!\S)و\s*ضابط|\s*$)", administrative
     )
     # 6. NER as a second extractor: fill what the rules could not read, replace what they read wrongly,
     #    note every difference

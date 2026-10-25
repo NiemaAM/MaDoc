@@ -111,6 +111,9 @@ TEXT = {
     "c_file": ("[file] {name}: {count} lines recognised", "[fichier] {name} : {count} lignes reconnues",
                "[ملف] {name}: تم التعرف على {count} سطر"),
     "c_edit": ("[edit] text corrected by hand", "[édition] texte corrigé à la main", "[تحرير] تم تصحيح النص يدويا"),
+    "c_respell": ("[spelling] checked again after the edit (the words written by hand are not corrected by themselves)",
+                  "[orthographe] vérifiée à nouveau après l'édition (les mots écrits à la main ne sont pas corrigés d'office)",
+                  "[إملاء] تم التحقق من جديد بعد التحرير (الكلمات المكتوبة يدويا لا تصحح تلقائيا)"),
     "c_spelling": ("[spelling] choices applied", "[orthographe] choix appliqués", "[إملاء] تم تطبيق الاختيارات"),
     # notification when the processing ends (the page is in the background)
     "n_done": ("Transcription finished", "Transcription terminée", "انتهى الاستخراج"),
