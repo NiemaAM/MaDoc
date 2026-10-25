@@ -6,6 +6,7 @@ small local HTTP server.
     python -m pytest tests/test_units.py
 """
 
+import json
 import os
 import sys
 import time
@@ -185,13 +186,13 @@ def test_translator_messages_never_go_to_stdout(monkeypatch, capsys):
     """stdout carries the JSON record: python src/pipeline.py x.txt > record.json must stay valid JSON."""
     import spelling_checker
     monkeypatch.setattr(spelling_checker, "OLLAMA_URL", "http://127.0.0.1:9")    # nothing listens there
-    record = dict(common.TEMPLATE, PRENOMPEREAR="محمد", PROFESSIONPERE="حداد التقليدي")
+    record = dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي", PROFESSIONPERE="حداد التقليدي")
     out = translator.translate(record)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Translation model unavailable" in captured.err
     assert out["PROFESSIONPEREFR"] == ""          # an untranslated job stays empty, never Arabic
-    assert out["PRENOMPEREFR"] == "محمد"          # kept, the validator reports it as untranslated
+    assert out["PRENOMPEREFR"] == "محمد افوضي"    # kept whole (never half Latin), reported by the validator
 
 
 def test_translator_refuses_a_remote_ollama(monkeypatch):
@@ -212,8 +213,7 @@ def translation_ollama(monkeypatch):
     import spelling_checker
 
     class Fake(BaseHTTPRequestHandler):
-        answer = {"name": "Fils de Mohamed", "address": "Khouribga", "job": "forgeron",
-                  "employee": "Lahcen Chmiti"}
+        answer = {"name_part": "Afoudi", "address": "Khouribga", "job": "forgeron"}
         models = [{"name": "qwen2.5:7b", "model": "qwen2.5:7b"}]
         requests = []
 
@@ -247,9 +247,9 @@ def translation_ollama(monkeypatch):
 
 
 def test_translator_local_model(translation_ollama):
-    record = dict(common.TEMPLATE, PRENOMPEREAR="بن محمد", PROFESSIONPERE="حداد التقليدي", LIEUNAISS="خريبكة")
+    record = dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي", PROFESSIONPERE="حداد التقليدي", LIEUNAISS="خريبكة")
     out = translator.translate(record)
-    assert out["PRENOMPEREFR"] == "Fils de Mohamed"
+    assert out["PRENOMPEREFR"] == "Mohamed Afoudi"         # Mohamed from names.json, Afoudi from the model
     assert out["PROFESSIONPEREFR"] == "FORGERON"           # post-processed like jobs.json
     assert out["LIEUNAISSFR"] == "Khouribga"
     body = translation_ollama.requests[0]
@@ -259,16 +259,47 @@ def test_translator_local_model(translation_ollama):
 
 def test_translator_model_not_pulled(translation_ollama, capsys):
     translation_ollama.models = [{"name": "llama3:8b", "model": "llama3:8b"}]
-    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد"))
-    assert out["PRENOMPEREFR"] == "محمد"
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="افوضي"))
+    assert out["PRENOMPEREFR"] == "افوضي"
     assert "ollama pull qwen2.5:7b" in capsys.readouterr().err
     assert translation_ollama.requests == []
 
 
 def test_translator_rejects_arabic_answers(translation_ollama):
-    translation_ollama.answer = dict(translation_ollama.answer, name="محمد")
-    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد"))
-    assert out["PRENOMPEREFR"] == "محمد"                    # the original, never the model's Arabic
+    translation_ollama.answer = dict(translation_ollama.answer, name_part="افوضي")
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي"))
+    assert out["PRENOMPEREFR"] == "محمد افوضي"              # the original, never the model's Arabic
+
+
+def test_translator_your_record(translation_ollama):
+    """The record where qwen2.5:7b wrote Azzouz, Zouhair, "Fille de Fille d'Adil", "hospital", two titles."""
+    translation_ollama.answer = {"name_part": "Fille d'Afoudi", "job": "x",
+                                 "address": "Boulevard de l'Hôpital, Khouribga"}
+    record = dict(common.TEMPLATE, NOMAR="اقلي", NOM="IQLI", PRENOMPEREAR="عزيز اقلي", NOMPEREAR="بن محمد",
+                  PRENOMMEREAR="زهرة افوضي", NOMMEREAR="بنت ادريس", EMPLOYECREANT="لحسن شميطي موظف جماعي",
+                  LIEUNAISS="محج المستشفى مدينة خريبڭة")
+    out = translator.translate(record)
+    assert out["PRENOMPEREFR"] == "Aziz Iqli"              # names.json + the child's family name
+    assert out["NOMPEREFR"] == "Fils de Mohamed"
+    assert out["PRENOMMEREFR"] == "Zahra Afoudi"
+    assert out["NOMMEREFR"] == "Fille de Driss"            # no model at all: lineage + names.json
+    assert out["EMPLOYECREANTFR"] == "Lahcen Afoudi " + common.EMPLOYEE_TITLE
+    asked = json.loads(translation_ollama.requests[0]["messages"][1]["content"])["items"]
+    assert [i["text"] for i in asked if i["type"] == "name_part"] == ["افوضي", "شميطي"]
+    address = next(i for i in asked if i["type"] == "address")
+    assert address["glossary"]["المستشفى"] == "Hôpital" and address["glossary"]["محج"] == "Boulevard"
+
+
+def test_translator_cleans_the_model_extras():
+    part = {"type": "name_part", "text": "ادريس"}
+    assert translator.postprocess_output(part, "Fille d'Idriss") == "Idriss"
+    assert translator.postprocess_output(part, "fils de ben idriss.") == "Idriss"
+    employee = {"type": "employee", "text": "لحسن شميطي"}
+    assert translator.postprocess_output(employee, "Lahcen Chmiati FONCTIONNAIRE ET OFFICIER DU STATUT CIVIL") \
+        == "Lahcen Chmiati " + common.EMPLOYEE_TITLE
+    assert translator.split_lineage("بنت ادريس") == ("Fille de", "ادريس")
+    assert translator.name_segments("عبد الرحيم افوضي", translator.get_names_lookup()) == \
+        [("عبد الرحيم", "Abderrahim"), ("افوضي", None)]
 
 
 def test_answer_results():

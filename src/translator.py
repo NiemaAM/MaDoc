@@ -27,7 +27,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from common import (
+    BASE_DIR,
     EMPLOYEE_TITLE,
+    ROOT,
     ar_key,
     get_places_lookup,
     read_json_file,
@@ -74,6 +76,74 @@ def is_available():
     return unavailable_reason() is None
 
 
+# lineage words: written by the code, never left to the model ("بنت ادريس" -> "Fille de" + "Driss")
+LINEAGE = {ar_key("بن"): "Fils de", ar_key("ابن"): "Fils de", ar_key("بنت"): "Fille de", ar_key("ابنة"): "Fille de"}
+# words of an address with their French form, imposed through the item's glossary like the places
+ADDRESS_TERMS = {ar_key(arabic): french for arabic, french in {
+    "مستشفى": "Hôpital", "المستشفى الإقليمي": "Hôpital provincial", "مستوصف": "Dispensaire",
+    "مصحة": "Clinique", "دار الولادة": "Maison d'accouchement", "المركز الصحي": "Centre de santé",
+    "مركز صحي": "Centre de santé", "جماعة": "Commune", "الجماعة القروية": "Commune rurale", "دوار": "Douar",
+    "إقليم": "Province", "اقليم": "Province", "عمالة": "Préfecture", "دائرة": "Cercle", "قيادة": "Caïdat",
+    "حي": "Quartier", "زنقة": "Rue", "شارع": "Avenue", "محج": "Boulevard",
+}.items()}
+# what a model sometimes writes before a name although the lineage is handled by the code
+LATIN_LINEAGE = re.compile(r"^(?:(?:fils|fille)\s+(?:de\s+|d['’]\s*)|(?:ben|bent|bint|benti|ibn|bin)\s+)+", re.I)
+# a model sometimes writes the officer's title itself: everything from its first word on is dropped
+TITLE_WORDS = re.compile(r"\b(?:FONCTION\w*|OFFI\w*|OFFE\w*|AGENT|EMPLOY\w*|D?[EÉ]TAT|STATUT|CIVIL\w*)\b.*$", re.I)
+
+
+@lru_cache(maxsize=None)
+def get_names_lookup():
+    """Normalised Arabic first name (one to three words) -> French spelling, from names.json (optional)."""
+    for folder in (BASE_DIR, ROOT):
+        path = Path(folder) / "names.json"
+        if path.is_file():
+            return {ar_key(arabic): french.strip() for arabic, french in read_json_file(path).items()
+                    if isinstance(french, str) and french.strip()}
+    return {}
+
+
+def name_segments(text, known):
+    """'عزيز اقلي' -> [('عزيز', 'Aziz'), ('اقلي', None)]: known words (one to three) and runs of unknown ones."""
+    words = text.split()
+    keys = [ar_key(word) for word in words]
+    segments, i = [], 0
+    while i < len(words):
+        for n in (3, 2, 1):
+            if i + n <= len(words) and " ".join(keys[i:i + n]) in known:
+                segments.append((" ".join(words[i:i + n]), known[" ".join(keys[i:i + n])]))
+                i += n
+                break
+        else:
+            if segments and segments[-1][1] is None:
+                segments[-1] = (segments[-1][0] + " " + words[i], None)
+            else:
+                segments.append((words[i], None))
+            i += 1
+    return segments
+
+
+def split_lineage(text):
+    """'بنت ادريس' -> ('Fille de', 'ادريس'); no lineage word -> ('', text)."""
+    words = text.split()
+    if len(words) > 1 and ar_key(words[0]) in LINEAGE:
+        return LINEAGE[ar_key(words[0])], " ".join(words[1:])
+    return "", text
+
+
+def address_terms(text):
+    """{Arabic words: French} for the usual address words found in text ("مستشفى" -> "Hôpital")."""
+    words = text.split()
+    keys = [ar_key(word) for word in words]
+    found = {}
+    for n in (3, 2, 1):
+        for i in range(len(words) - n + 1):
+            key = " ".join(keys[i:i + n])
+            if key in ADDRESS_TERMS and not any(" ".join(words[i:i + n]) in f for f in found):
+                found[" ".join(words[i:i + n])] = ADDRESS_TERMS[key]
+    return found
+
+
 @lru_cache(maxsize=None)
 def places_max_words():
     """Number of words of the longest known place name (the table has thousands of entries)."""
@@ -115,7 +185,11 @@ def postprocess_output(item, output):
     """Enforce the mandatory conventions on the LLM output."""
     text = output.strip()
     source = ar_key(item["text"])
-    if item["type"] == "name":
+    if item["type"] == "name_part":
+        # a part of a name: no lineage word (the code writes it), no title, capitalised like the dictionary
+        text = LATIN_LINEAGE.sub("", text).strip(" .,;:-\"'")
+        text = " ".join(word[:1].upper() + word[1:].lower() for word in text.split())
+    elif item["type"] == "name":
         family = item.get("family_name") or {}
         if family and family["fr"].lower() not in text.lower():
             log(f"Warning: family name '{family['fr']}' missing from the translation of '{item['text']}'.")
@@ -132,9 +206,9 @@ def postprocess_output(item, output):
         # same style as jobs.json: upper case, no punctuation around
         text = re.sub(r"\s+", " ", text.strip(" .,;:-\"'")).upper()
     elif item["type"] == "employee":
-        # the job title is always the same fixed sentence
-        if EMPLOYEE_TITLE not in text.upper():
-            text = f"{text} {EMPLOYEE_TITLE}"
+        # the job title is always the same fixed sentence: a title written by the model is dropped
+        text = TITLE_WORDS.sub("", text).strip(" .,;:-")
+        text = f"{text} {EMPLOYEE_TITLE}".strip()
     return text
 
 
@@ -184,6 +258,11 @@ def translate_batch(items):
     - Follow the input order exactly.
     - Return one result per input item.
 
+    TYPE: name_part
+    - One or more words of a Moroccan personal or family name, without "بن" / "بنت".
+    - Return only their usual Latin spelling in Moroccan civil records (French conventions: ش = Ch, خ = Kh,
+      غ = Gh, و = Ou, ج = J), first letter of each word in upper case. Nothing else: no "Fils de", no title.
+
     TYPE: name
     - Transliterate Moroccan Arabic personal names into conventional French spellings used in Moroccan civil records.
     - Transliterate personal names; never translate their meanings.
@@ -199,6 +278,7 @@ def translate_batch(items):
 
     TYPE: address
     - Translate Arabic addresses into offical Moroccan town name in French.
+    - Write French, never English ("Hôpital", never "Hospital").
     - Moroccan city, town, village, and province names must use their established French/Latin spellings.
     - Never guess or improvise the spelling of a Moroccan place name.
     - Preserve street numbers, neighborhood names, place names, and all administrative divisions.
@@ -207,8 +287,8 @@ def translate_batch(items):
     - Use established French spellings for Moroccan places when known. Otherwise use a consistent Latin transliteration.
     - Preserve all numbers and address details.
     - Do not invent missing details.
-    - Some address items have a "glossary" object (Arabic name -> official French name).
-      You MUST use exactly those French spellings for those names, never another spelling.
+    - Some address items have a "glossary" object (Arabic words -> French).
+      You MUST use exactly those French words and spellings for them, never another spelling.
 
     TYPE: job
     - The text is a profession written on a Moroccan birth certificate (Arabic).
@@ -273,66 +353,92 @@ def translate_batch(items):
 
 
 # 4. translate names and addresses to French with the local model
+NAME_FIELDS = {
+    "PRENOMPEREAR": "PRENOMPEREFR",
+    "NOMPEREAR": "NOMPEREFR",
+    "PRENOMMEREAR": "PRENOMMEREFR",
+    "NOMMEREAR": "NOMMEREFR",
+    "EMPLOYECREANT": "EMPLOYECREANTFR",
+}
+OTHER_FIELDS = {
+    "LIEUNAISS": ("LIEUNAISSFR", "address"),
+    # professions: only those the dictionary did not find (mapper.py left the French empty)
+    "PROFESSIONPERE": ("PROFESSIONPEREFR", "job"),
+    "PROFESSIONMERE": ("PROFESSIONMEREFR", "job"),
+}
+
+
 def translate(data):
-    """Populate French fields for names, addresses, and employee information."""
+    """Populate French fields for names, addresses, and employee information.
+
+    Names are built by the code: the lineage word ("Fils de" / "Fille de"), the first names of names.json,
+    the child's family name for the father; only the other words go to the model ("name_part" items)."""
     translated = copy.deepcopy(data)
-    field_mapping = {
-        # Personal names
-        "PRENOMPEREAR": ("PRENOMPEREFR", "name"),
-        "NOMPEREAR": ("NOMPEREFR", "name"),
-        "PRENOMMEREAR": ("PRENOMMEREFR", "name"),
-        "NOMMEREAR": ("NOMMEREFR", "name"),
-        # Addresses
-        "LIEUNAISS": ("LIEUNAISSFR", "address"),
-        # Employee name and job title
-        "EMPLOYECREANT": ("EMPLOYECREANTFR", "employee"),
-        # Professions: only those the dictionary did not find (mapper.py left the French empty)
-        "PROFESSIONPERE": ("PROFESSIONPEREFR", "job"),
-        "PROFESSIONMERE": ("PROFESSIONMEREFR", "job"),
-    }
-    active_fields = []
-    for source_field, (target_field, item_type) in field_mapping.items():
-        value = translated.get(source_field)
-        if item_type == "job" and str(translated.get(target_field) or "").strip():
+    known = get_names_lookup()
+    items = []   # one request for everything
+
+    def ask(item):
+        """Index of the item in the request (the same text is asked once)."""
+        for index, existing in enumerate(items):
+            if existing == item:
+                return index
+        items.append(item)
+        return len(items) - 1
+
+    plans = []   # (source field, target field, kind, prefix, [(arabic, french or item index)])
+    for source, target in NAME_FIELDS.items():
+        value = translated.get(source)
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        text = value.strip()
+        kind = "employee" if source == "EMPLOYECREANT" else "name"
+        if kind == "employee":
+            text = strip_employee_job(text)   # the French job title is fixed, only the name is translated
+        prefix, rest = split_lineage(text) if kind == "name" else ("", text)
+        names = dict(known)
+        if source == "PRENOMPEREAR" and translated.get("NOMAR") and translated.get("NOM"):
+            # the father usually has the child's family name, already in Latin letters on the certificate
+            names[ar_key(translated["NOMAR"])] = translated["NOM"].strip().title()
+        parts = [(arabic, french if french is not None else ask({"type": "name_part", "text": arabic}))
+                 for arabic, french in name_segments(rest, names)]
+        plans.append((source, target, kind, prefix, text, parts))
+
+    others = []
+    for source, (target, kind) in OTHER_FIELDS.items():
+        value = translated.get(source)
+        if kind == "job" and str(translated.get(target) or "").strip():
             continue  # found in the dictionary
         if isinstance(value, str) and value.strip():
-            text = value.strip()
-            # the French job title is fixed, only the employee name is sent
-            if item_type == "employee":
-                text = strip_employee_job(text)
-            # the father usually has the child's family name: it is sent with the request
-            family_name = {}
-            if source_field == "PRENOMPEREAR" and translated.get("NOMAR") and translated.get("NOM"):
-                family_name = {"ar": translated["NOMAR"], "fr": translated["NOM"].title()}
-            active_fields.append(
-                {
-                    "source": source_field,
-                    "target": target_field,
-                    "type": item_type,
-                    "text": text,
-                    "family_name": family_name,
-                }
-            )
-    if not active_fields:
-        return translated
-    # All names, addresses, and employee information are sent in one request.
-    items = []
-    for field in active_fields:
-        item = {"type": field["type"], "text": field["text"]}
-        if field["family_name"]:
-            item["family_name"] = field["family_name"]
-        if field["type"] == "address":
-            # official names found in cities.json / places.json are imposed to the model
-            glossary = find_known_places(field["text"])
-            if glossary:
-                item["glossary"] = glossary
-        items.append(item)
-    outputs = translate_batch(items)
-    for field, output in zip(active_fields, outputs):
-        # no model / refused answer: the Arabic comes back unchanged, a job must then stay empty (not Arabic)
-        if field["type"] == "job" and (output == field["text"] or ARABIC_SCRIPT.search(output)):
+            item = {"type": kind, "text": value.strip()}
+            if kind == "address":
+                # official place names (cities.json / places.json) and the usual address words are imposed
+                glossary = {**address_terms(item["text"]), **find_known_places(item["text"])}
+                if glossary:
+                    item["glossary"] = glossary
+            others.append((source, target, kind, ask(item)))
+
+    outputs = translate_batch(items) if items else []
+
+    for source, target, kind, prefix, text, parts in plans:
+        words = [outputs[part] if isinstance(part, int) else part for _, part in parts]
+        if any(ARABIC_SCRIPT.search(word) for word in words):
+            # a part the model could not translate: the whole field stays Arabic (reported by the validator)
+            translated[target] = text
             continue
-        translated[field["target"]] = output
+        for (arabic, part), word in zip(parts, words):
+            if isinstance(part, int) and not spelling_checker.names_agree(arabic, word):
+                log(f"Warning: '{word}' does not look like a reading of '{arabic}', please check it.")
+        french = " ".join(word for word in [prefix] + words if word)
+        if kind == "employee":
+            french = postprocess_output({"type": "employee", "text": text}, french)
+        translated[target] = french
+
+    for source, target, kind, index in others:
+        output = outputs[index]
+        # no model / refused answer: the Arabic comes back unchanged, a job must then stay empty (not Arabic)
+        if kind == "job" and (output == items[index]["text"] or ARABIC_SCRIPT.search(output)):
+            continue
+        translated[target] = output
     return translated
 
 

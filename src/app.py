@@ -465,8 +465,13 @@ def spelling_review(state):
                 color_map[label] = FLAG_COLOR
             else:
                 proposal = " ".join(change["new"]) or "(removed)"
-                label = ("✓ " if index in accepted else "✗ ") + proposal
-                color_map[label] = ACCEPTED_COLOR if index in accepted else REFUSED_COLOR
+                if change.get("check") and index not in accepted:
+                    # a disagreement inside the certificate, with its correction: orange, applied by a click
+                    label = "≠ " + proposal
+                    color_map[label] = FLAG_COLOR
+                else:
+                    label = ("✓ " if index in accepted else "✗ ") + proposal
+                    color_map[label] = ACCEPTED_COLOR if index in accepted else REFUSED_COLOR
             pieces.append((line[begin:finish], label))
             segments.append(index)
             written = finish
@@ -482,15 +487,26 @@ def spelling_review(state):
                 continue
             if change.get("flag"):
                 rows.append(f"- ≠ line {change['line'] + 1}: **{isolate(' '.join(change['old']))}** "
-                            f"{change['reason']}: no correction found, check the scan")
+                            f"{change['reason']}: " + ("no correction found, check the scan"
+                                                        if change.get("source") == "names" else "check the scan"))
                 continue
-            mark = "✓" if i in accepted else "✗"
-            if change.get("options") and len(change["options"]) > 1:
-                rule = ("from jobs.json, several jobs possible: " + " / ".join(isolate(" ".join(o)) for o in change["options"])
+            mark = "✓" if i in accepted else ("≠" if change.get("check") else "✗")
+            if change.get("check"):
+                rule = f"{change['context']}; {change['reason']}" + (
+                    " (click again for the next one)" if len(change.get("options") or []) > 1
+                    and "click again" not in change["reason"] else "")
+            elif change.get("options") and len(change["options"]) > 1:
+                where = {"jobs.json": "jobs.json", "cities.json": "cities.json", "names.json": "names.json",
+                         "dates": "the Hijri date"}.get(change.get("source"), "date_time.json")
+                rule = (f"from {where}, several possible: " + " / ".join(isolate(" ".join(o)) for o in change["options"])
                         + " (click again for the next one)")
+            elif change.get("source") == "names" and change["accepted"]:
+                rule = f"the child's Arabic and Latin names did not match; {change['context']}"
             elif change.get("source") == "names":
                 rule = (f"the child's Arabic and Latin names did not match; proposed {change['context']}"
                         " (names are never applied automatically: click to apply)")
+            elif change.get("source") in ("cities.json", "names.json") and not change["accepted"]:
+                rule = f"{change['context']}; {change['reason']} (click to apply)"
             elif change.get("source") == "jobs.json":
                 rule = "from jobs.json" + (", " + change["context"] if change.get("context") else "") + (
                     "" if change["accepted"] else f"; refused by the rules: {change['reason']}")

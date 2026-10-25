@@ -104,6 +104,13 @@ def log(*args):
 # ---------------------------------------------------------------------------------------------------------
 # vocabulary: the words a correction may produce
 # ---------------------------------------------------------------------------------------------------------
+def form_vocabulary():
+    words = set()
+    for word in FORM_WORDS.split():
+        words.update({word, word[2:] if word.startswith("ال") and len(word) > 3 else "ال" + word})
+    return frozenset(words)
+
+
 def surface(token):
     """A word as written, without diacritics / tatweel / invisible characters.
 
@@ -111,6 +118,9 @@ def surface(token):
     parser needs the right letter ("ة" / "ه" / "ى" / hamza are exactly what the HTR confuses).
     """
     return ARABIC_DIACRITICS.sub("", INVISIBLE_CHARS.sub("", token)).strip()
+
+
+FORM_VOCABULARY = form_vocabulary()
 
 
 @lru_cache(maxsize=None)
@@ -630,7 +640,16 @@ def line_changes(original, proposed, line_index, vocabulary=None, protected=None
             start, end = position, position + len(old_part)
             position = end
             if not old_part:
-                continue   # a word added by the model: it has no place in the original, never proposed
+                # words added by the model: only words of the printed form ("الدقيقة"), written before the next
+                # word and applied when the record needs them (judge_by_record)
+                if (new_part and start < len(old_units) and all(surface(w) in FORM_VOCABULARY for w in new_part)
+                        and not any(protected.get(k) for k in (start - 1, start))):
+                    following = old_units[start]["text"]
+                    changes.append({"line": line_index, "start": start, "end": start + 1, "old": [following],
+                                    "new": list(new_part) + [following], "accepted": False, "source": "added",
+                                    "context": "a word of the form added by the model",
+                                    "reason": "not applied: the record did not need it"})
+                continue
             if spacing_only(old_part, new_part, vocabulary):
                 continue
             if not new_part:
@@ -670,6 +689,8 @@ def describe(change):
         source = f" ({change['context']})" if change.get("context") else ""
     if change["accepted"]:
         return f"line {change['line'] + 1}: {before!r} -> {after!r}{source}"
+    if change.get("check"):
+        return f"line {change['line'] + 1}: check {before!r} -> {after!r}{source} ({change['reason']})"
     return f"line {change['line'] + 1}: refused {before!r} -> {after!r}{source} ({change['reason']})"
 
 
@@ -709,11 +730,14 @@ Correct ONLY spelling mistakes made by the reading model:
 - a missing, extra, doubled or wrong letter in a word ("البيتت" -> "البيت", "موفق" -> "موافق"),
 - a word cut in two ("ميلاي ية" -> "ميلادية"),
 - a misread profession after "حرفته" / "حرفتها" / "مهنته" / "مهنتها", only when the written word is not a real
-  profession: write the profession it is most probably a misreading of (one or two letters differ).
+  profession: write the profession it is most probably a misreading of (one or two letters differ),
+- a word of the printed form lost or cut by the reading model, when the sentence of the form needs it: the
+  minute's label in "على الساعة الواحدة و العشرين و الدقيقة الصفر" ("وة: الصفر" -> "و الدقيقة: الصفر"),
+  "موافق", "سنة", "عام", "هجرية", "ميلادية". Only these fixed words of the form, never a name, a place or a number.
 NEVER replace a correct word by another correct word: a correct profession by another profession, a correct
 number by another number. NEVER change: personal names, family names, place names you are not sure of, numbers, digits, Latin text
-(PRENOM, NOM and the French names), punctuation, the order of the words. Never add or remove a word, never
-rephrase, never translate, never complete missing information. When unsure, keep the word as it is.
+(PRENOM, NOM and the French names), punctuation, the order of the words. Never remove a word, never rephrase,
+never translate, never complete missing information (a name, a number, a date). When unsure, keep the word.
 
 Return ONLY a JSON object {"lines": [{"id": 1, "text": "..."}, ...]}: one object per input line, with the same
 "id". Never split a line in two and never join two lines, even when a word seems to belong to the next line."""
@@ -990,6 +1014,30 @@ def name_candidates(arabic, latin, entry):
     return sorted(candidates)
 
 
+def document_name(lines, span, arabic, latin):
+    """(name, line) written elsewhere in the text that agrees with the Latin reading and differs from the Arabic
+    reading by one letter per word, plus one ("تفاص" / TIFAF: the father is "رشيد تفاف"; "لحيس" / LAHNICHE:
+    "لحنيش"), or None."""
+    size = len(arabic.split())
+    target = unit_key(arabic.replace(" ", ""))
+    found = set()
+    for line_index, line in enumerate(lines):
+        words = [u["text"] for u in line_units(line)]
+        for k in range(len(words) - size + 1):
+            if (line_index, k) == (span[0], span[1]):
+                continue
+            candidate = " ".join(words[k:k + size])
+            key = unit_key(candidate.replace(" ", ""))
+            if (key != target and ARABIC_WORD.search(candidate) and not DIGIT_OR_LATIN.search(candidate)
+                    and not any(is_known(w) for w in words[k:k + size])
+                    and edit_distance(key, target) <= size + 1 and names_agree(candidate, latin)):
+                found.add((surface(candidate), line_index))
+    names = {name for name, _ in found}
+    if len(names) != 1:
+        return None   # nothing, or several different names: the model / the person decides
+    return min(found, key=lambda item: item[1])
+
+
 def name_changes(lines, model_changes, notes, model=None, use_model=True):
     """Proposals for the child's names whose Arabic and Latin readings disagree (never applied by default).
 
@@ -1007,20 +1055,59 @@ def name_changes(lines, model_changes, notes, model=None, use_model=True):
             disagreeing.append((kind, sides, arabic, latin))
     if not disagreeing:
         return []
+    # the same name written elsewhere in the certificate (the father's family name, the declarant ...) that
+    # agrees with the Latin reading and is one letter from the Arabic one: applied, no model needed
+    resolved = {}
+    for n, (kind, sides, arabic, latin) in enumerate(disagreeing):
+        found = document_name(lines, sides["arabic"], arabic, latin)
+        if found:
+            resolved[n] = found
+            continue
+        # a first name of names.json one letter away that agrees with the Latin reading ("ببيل" / NABIL)
+        close = [w for w in close_entries(arabic, get_names()) if len(ar_key(w)) == len(ar_key(arabic))
+                 and names_agree(w, latin)] if len(arabic.split()) == 1 else []
+        if len(close) == 1:
+            resolved[n] = (close[0], None)
+            continue
+        # two letters away: proposed in orange, never applied by the rules
+        close = [w for w in close_entries(arabic, get_names(), limit=2) if names_agree(w, latin)] \
+            if len(arabic.split()) == 1 else []
+        if 1 <= len(close) <= 3:
+            resolved[n] = (close, "check")
+    unresolved = [n for n in range(len(disagreeing)) if n not in resolved]
     entries = [{}] * len(disagreeing)
-    if use_model:
+    if use_model and unresolved:
         try:
+            asked = [disagreeing[n] for n in unresolved]
             answer = ollama_json(NAME_PROMPT, {"names": [{"kind": k, "arabic": a, "latin": l}
-                                                         for k, _, a, l in disagreeing]}, model)
-            entries = name_answers(answer, len(disagreeing))
+                                                         for k, _, a, l in asked]}, model)
+            for n, entry in zip(unresolved, name_answers(answer, len(asked))):
+                entries[n] = entry
         except Exception as e:   # not running, refused address, bad answer: the mismatch is only flagged
             notes.append(f"names check without the model ({type(e).__name__}: {e})")
     changes = []
-    for (kind, sides, arabic, latin), entry in zip(disagreeing, entries):
+    for n, ((kind, sides, arabic, latin), entry) in enumerate(zip(disagreeing, entries)):
         for side in ("arabic", "latin"):
             line, start, end = sides[side]
             for change in [c for c in model_changes if c["line"] == line and start <= c["start"] < end]:
                 model_changes.remove(change)
+        if n in resolved and resolved[n][1] == "check":
+            options, _ = resolved[n]
+            line, start, end = sides["arabic"]
+            changes.append({"line": line, "start": start, "end": end, "old": arabic.split(), "new": [options[0]],
+                            "accepted": False, "check": True, "source": "names",
+                            **({"options": [[w] for w in options]} if len(options) > 1 else {}),
+                            "context": f"{kind}: first names of names.json that agree with {latin}",
+                            "reason": f"two letters differ from {arabic}: click to use it"})
+            continue
+        if n in resolved:
+            new, at = resolved[n]
+            line, start, end = sides["arabic"]
+            where = f"written so on line {at + 1}" if at is not None else "a first name of names.json"
+            changes.append({"line": line, "start": start, "end": end, "old": arabic.split(), "new": new.split(),
+                            "accepted": True, "source": "names", "reason": "",
+                            "context": f"{kind}: {new} / {latin}, {where}"})
+            continue
         candidates = name_candidates(arabic, latin, entry)
         best = [c for c in candidates if c[0] == candidates[0][0]] if candidates else []
         if not best:
@@ -1082,9 +1169,25 @@ def propose(text, model=None):
     # a label glued to the previous word is split again; misread date words get the dictionary's word
     changes.extend(glued_labels(lines, changes))
     changes.extend(date_word_suggestions(lines, protected_by_line, changes))
+    # inside names and places: the words of an address, cities.json, names.json, the rest of the certificate
+    changes.extend(value_word_suggestions(lines, protected_by_line, changes))
+    changes.extend(minute_label(lines, changes))
+    changes.extend(form_word_suggestions(lines, protected_by_line, changes))
+    changes.extend(declarant_names(lines, changes))
     changes = sorted(changes, key=lambda c: (c["line"], c["start"]))
     # numbers: judged by the whole record (a misread year makes a date impossible)
     date_fixes(text, changes)
+    joint_date_fixes(text, changes)
+    judge_by_record(text, changes, ("time", "added"))
+    # a refused model change of words that are already correct is noise ("ثالث" -> "الثالث عشر"): notes only
+    for change in [c for c in changes if model_change(c) and not c["accepted"]
+                   and c["reason"] == "the original words are already correct words"]:
+        notes.append("ignored: " + describe(change))
+        changes.remove(change)
+    # the certificate read as a whole: a Gregorian date the Hijri one contradicts, an address written twice
+    changes.extend(date_flags(text, changes))
+    changes.extend(address_flags(lines, changes))
+    changes = sorted(changes, key=lambda c: (c["line"], c["start"]))
     return changes, notes
 
 
@@ -1096,6 +1199,18 @@ def number_words():
         for alias in aliases if isinstance(aliases, list) else []:
             for word in surface(str(alias)).split():
                 words.update({word, word[2:] if word.startswith("ال") else "ال" + word})
+    return frozenset(words)
+
+
+@lru_cache(maxsize=None)
+def month_words():
+    """The month words of date_time.json, as written (one word each: "ربيع الثاني" is two words)."""
+    words = set()
+    for section in ("hijri_months", "miladi_months"):
+        for aliases in dates_data.get(section, {}).values():
+            for alias in aliases if isinstance(aliases, list) else []:
+                if len(surface(str(alias)).split()) == 1 and len(surface(str(alias))) >= 4:
+                    words.add(surface(str(alias)))
     return frozenset(words)
 
 
@@ -1117,23 +1232,650 @@ def date_word_suggestions(lines, protected_by_line, changes):
     valid, and with several words only when one of them makes the Hijri and Gregorian dates agree to the day
     (date_fixes); otherwise it stays a refused proposal (the person can choose)."""
     words = date_words()
-    covered = {(c["line"], k) for c in changes for k in range(c["start"], max(c["end"], c["start"] + 1))}
     out = []
     for line_index, protected in protected_by_line.items():
         for k, unit in enumerate(line_units(lines[line_index])):
             word = surface(unit["text"])
-            if (k in protected or (line_index, k) in covered or len(word) < 3 or not ARABIC_WORD.search(word)
-                    or DIGIT_OR_LATIN.search(word) or is_known(word)):
+            if (k in protected or len(word) < 3 or not ARABIC_WORD.search(word)
+                    or DIGIT_OR_LATIN.search(word) or is_known(word) or covered(changes, line_index, k)):
                 continue
             key = unit_key(word)
-            close = sorted({w for w in words if abs(len(w) - len(word)) <= 1 and edit_distance(key, unit_key(w)) <= 1})
-            if 1 <= len(close) <= 3:
+            close = one_per_key(w for w in words if abs(len(w) - len(word)) <= 1 and edit_distance(key, unit_key(w)) <= 1)
+            if not close and len(word) >= 4:
+                # a month is a long word of a short list: two letters may be misread ("دجرة" -> "دجنبر")
+                close = one_per_key(w for w in month_words() if abs(len(w) - len(word)) <= 2
+                                    and edit_distance(key, unit_key(w)) <= 2)
+            if 1 <= len(close) <= 6:
+                # the word with the same last letter first ("ثمانة": "ثمانية" before "ثمان" / "ثماني")
+                close.sort(key=lambda w: (edit_distance(key, unit_key(w)), w[-1:] != word[-1:],
+                                          abs(len(w) - len(word)), w))
+                drop_refused_model_changes(changes, line_index, k)
                 out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]], "new": [close[0]],
                             "options": [[w] for w in close], "accepted": False,
                             "reason": "not applied: no date of the record needed it" if len(close) == 1 else
                                       "several words are possible: " + " / ".join(close),
                             "source": "date_time.json"})
     return out
+
+
+def model_change(change):
+    """A change proposed by the spelling model itself (not by a dictionary or a check of the document)."""
+    return not change.get("source") and not change.get("flag")
+
+
+def covered(changes, line_index, k):
+    """True when unit k of the line is already handled: an accepted change, or a change of a dictionary or a
+    check. A refused change of the model does not count: a dictionary word can replace it ("ششوال": the
+    model proposed "من شعبان", date_time.json has "شوال")."""
+    return any(c["line"] == line_index and c["start"] <= k < max(c["end"], c["start"] + 1)
+               and (c["accepted"] or not model_change(c)) for c in changes)
+
+
+def drop_refused_model_changes(changes, line_index, k):
+    """Remove the refused model changes on unit k (a dictionary or document proposal replaces them)."""
+    for change in [c for c in changes if c["line"] == line_index and c["start"] <= k < max(c["end"], c["start"] + 1)
+                   and model_change(c) and not c["accepted"]]:
+        changes.remove(change)
+
+
+def one_per_key(words):
+    """The words, one per spelling the parser reads the same ("ألفين" / "الفين"), the one with a hamza first."""
+    best = {}
+    for word in sorted(set(words)):
+        key = unit_key(word)
+        if key not in best or (word != key and best[key] == key):
+            best[key] = word
+    return sorted(best.values())
+
+
+# ---------------------------------------------------------------------------------------------------------
+# value slots: the common words of an address, the places of cities.json, the first names of names.json
+# ---------------------------------------------------------------------------------------------------------
+# words of an address that are not names: a misread one may be corrected inside a place
+ADDRESS_WORDS = frozenset(surface(w) for w in """
+جماعة الجماعة مدينة اقليم إقليم دائرة عمالة قيادة باشوية مقاطعة دوار قرية مركز الحضرية القروية حي زنقة الزنقة
+شارع درب تجزئة إقامة عمارة الشطر الرقم محج المستشفى مستشفى مصحة المصحة مستوصف المستوصف الإقليمي
+""".split())
+# labels after which a place of cities.json is written ("بجماعة اليوسفية", "اقليم آسفي"), compared without a
+# glued و / ب and without the article
+PLACE_LABELS = frozenset(ar_key(w) for w in """
+ب جماعة مدينة اقليم إقليم أقليم دائرة عمالة قيادة باشوية مقاطعة دوار قرية المولود المولودة ولد
+""".split())
+# labels after which a person's name is written
+NAME_LABELS = frozenset(ar_key(w) for w in """
+الشخصي العائلي والده والدها والدته والدتها والد والدت بن بنت ابن ابنة السيد السيدة نحن
+""".split())
+# the first word of many place names: never corrected ("اولاد عزوز", "بني ملال", "سيدي بنور", "آيت ...")
+PLACE_PREFIX_WORDS = frozenset(ar_key(w) for w in "اولاد أولاد بني سيدي عين ايت آيت مولاي دار أهل اهل".split())
+
+
+def label_key(word):
+    """The key of a label word, without a glued و / ب ("بجماعة" -> "جماعة")."""
+    key = ar_key(word)
+    if len(key) > 2 and key[0] in PREFIXES and (key[1:] in PLACE_LABELS or key[1:] in NAME_LABELS):
+        return key[1:]
+    return key
+
+
+def slot_kind(units, k, protected):
+    """"place" or "name": what the label before the value that contains unit k announces (None: unknown)."""
+    j = k
+    while j > 0 and protected.get(j - 1) == "value":
+        j -= 1
+    if j == 0:
+        return None   # the label is on the line before: not guessed
+    label = label_key(units[j - 1]["text"])
+    if label in PLACE_LABELS:
+        return "place"
+    if label in NAME_LABELS:
+        return "name"
+    return None
+
+
+@lru_cache(maxsize=None)
+def get_places():
+    """Arabic places of cities.json / places.json as written, by key (ar_key)."""
+    from common import places_data
+    return {ar_key(arabic): surface(arabic) for arabic in places_data if surface(arabic)}
+
+
+@lru_cache(maxsize=None)
+def get_regions():
+    """Region of every place of cities.json, by key (ar_key)."""
+    path = Path(BASE_DIR) / "cities.json"
+    if not path.is_file():
+        return {}
+    return {ar_key(city["nameAr"]): (city.get("region") or {}).get("name", "")
+            for city in json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(city, dict) and city.get("nameAr")}
+
+
+def line_regions(units, places):
+    """Regions of the places written on a line (as read, or one letter away)."""
+    regions = get_regions()
+    found = set()
+    for unit in units:
+        key = ar_key(unit["text"])
+        for written in ([places[key]] if key in places else close_entries(unit["text"], places)):
+            if regions.get(ar_key(written)):
+                found.add(regions[ar_key(written)])
+    return found
+
+
+@lru_cache(maxsize=None)
+def get_names():
+    """First names of names.json as written, by key (ar_key)."""
+    path = Path(BASE_DIR) / "names.json"
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {ar_key(arabic): surface(arabic) for arabic in data if surface(arabic)}
+
+
+def document_words(lines):
+    """Every unit of the text: {unit_key: [(line, index)]} (to know whether a word is written elsewhere)."""
+    found = {}
+    for line_index, line in enumerate(lines):
+        for k, unit in enumerate(line_units(line)):
+            found.setdefault(unit_key(unit["text"]), []).append((line_index, k))
+    return found
+
+
+def close_entries(word, entries, limit=1):
+    """The entries (key -> written form) whose key is at most `limit` letters from the word's key."""
+    key = ar_key(word)
+    return sorted({written for entry_key, written in entries.items()
+                   if abs(len(entry_key) - len(key)) <= limit and edit_distance(key, entry_key) <= limit})
+
+
+def value_word_suggestions(lines, protected_by_line, changes):
+    """A misread word inside a name or a place gets the dictionary's word one letter away:
+
+    - a word of an address ("المستتشفى" -> "المستشفى"): applied (these words are not names);
+    - after a place marker, a place of cities.json ("اليوسفة" -> "اليوسفية", "أسي" -> "آسفي");
+    - elsewhere, a first name of names.json ("محهد" -> "محمد").
+    A place or a name is applied only when the corrected word is written elsewhere in the certificate (the
+    same name or place is often written twice); otherwise it is a proposal the person accepts or not.
+    Words that already are a known place or name are never touched."""
+    places, names = get_places(), get_names()
+    written = document_words(lines)
+    out = []
+    for line_index, protected in protected_by_line.items():
+        units = line_units(lines[line_index])
+        for k, unit in enumerate(units):
+            word = surface(unit["text"])
+            key = ar_key(word)
+            bare = key[1:] if len(key) > 3 and key[0] in PREFIXES else key   # "بخريبڭة" is "ب" + a city
+            if (protected.get(k) != "value" or len(word) < 3 or DIGIT_OR_LATIN.search(word)
+                    or not ARABIC_WORD.search(word) or covered(changes, line_index, k)
+                    or {key, bare} & (set(places) | set(names) | PLACE_PREFIX_WORDS)):
+                continue
+            kind = slot_kind(units, k, protected)
+            if k and ar_key(units[k - 1]["text"]) in PLACE_PREFIX_WORDS:
+                continue   # the second word of a compound place ("اولاد فارس" is not "فاس")
+            new, source, accepted, options = None, None, False, []
+            address = one_per_key(w for w in ADDRESS_WORDS if abs(len(w) - len(word)) <= 1
+                                  and edit_distance(unit_key(word), unit_key(w)) <= (1 if len(w) < 7 else 2))
+            if len(address) == 1 and len(word) >= 4:
+                new, source, accepted = address[0], "address", True
+            elif len(written.get(unit_key(word), [])) > 1:
+                continue   # a name or place read the same way twice ("عتيقة ممير" ... "عتيقة ممير"): kept
+            elif kind == "place" or (kind == "name" and len(word) >= 4):
+                entries, source = (places, "cities.json") if kind == "place" else (names, "names.json")
+                close = [w for w in close_entries(word, entries) if unit_key(w) != unit_key(word)]
+                if source == "names.json":
+                    # a misread letter, not another name: same length ("محهد" / "محمد"), never a letter more or
+                    # less ("الإدريسي" is not "ادريس", "عزيزة" is not "عزيز")
+                    close = [w for w in close if len(ar_key(w)) == len(ar_key(word))]
+                # first the one written elsewhere in the certificate, then a place of the same region as the
+                # other places of the line ("اليوسفة ... اقليم أسي": آسفي, Marrakech-Safi, before أسا)
+                regions = line_regions(units[:k] + units[k + 1:], places) if source == "cities.json" else set()
+                if regions:
+                    # a place of another region than the rest of the address is not this place
+                    close = [w for w in close if get_regions().get(ar_key(w)) in regions or written.get(unit_key(w))]
+                close.sort(key=lambda w: (not written.get(unit_key(w)),
+                                          get_regions().get(ar_key(w)) not in regions, w))
+                if 1 <= len(close) <= 3:
+                    new, options = close[0], close
+            if not new or unit_key(new) == unit_key(word):
+                continue
+            elsewhere = [(l, i) for l, i in written.get(unit_key(new), []) if l != line_index or i != k]
+            if source != "address":
+                # applied only when the word is written so elsewhere, and no other word is (several options)
+                accepted = bool(elsewhere) and not any(written.get(unit_key(w)) for w in options[1:])
+            context = {"address": "a word of the address",
+                       "cities.json": "a place of cities.json",
+                       "names.json": "a first name of names.json"}[source]
+            if elsewhere and source != "address":
+                context += f", written so on line {elsewhere[0][0] + 1}"
+            drop_refused_model_changes(changes, line_index, k)
+            reason = "" if accepted else (
+                "several are possible: " + " / ".join(options) if len(options) > 1 and not elsewhere
+                else "not written so elsewhere in the certificate: check the scan")
+            out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]], "new": [new],
+                        "accepted": accepted, "source": source, "context": context, "reason": reason,
+                        **({"options": [[w] for w in options]} if len(options) > 1 else {})})
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------
+# coherence of the whole certificate: dates against each other, the address written twice
+# ---------------------------------------------------------------------------------------------------------
+# ---- the declarant is a parent: the same person's name, written twice ----
+PARENT_OF_DECLARANT = {ar_key(w): kind for w, kind in (("والده", "father"), ("والدها", "father"),
+                                                        ("والدته", "mother"), ("والدتها", "mother"))}
+NAME_STOP = {ar_key(w) for w in ("بن", "بنت", "ابن", "ابنة", "جنسيته", "جنسيتها", "المولود", "المولودة",
+                                 "حرفته", "حرفتها", "تحت")}
+
+
+def name_after(units, k):
+    """Indexes of the name written after unit k, up to "بن" / "بنت" / a label / punctuation."""
+    out = []
+    for j in range(k + 1, len(units)):
+        word = surface(units[j]["text"])
+        if (ar_key(word) in NAME_STOP or label_kind(word) or DIGIT_OR_LATIN.search(word)
+                or not ARABIC_WORD.search(word)):
+            break
+        out.append(j)
+        if units[j]["trail"].strip() or len(out) == 3:
+            break   # "رشيد تفاف (والده)": the name ends at the punctuation
+    return out
+
+
+def declarant_names(lines, changes):
+    """"صرحت به السيدة نعيمة السكتاني (والدتها)": the declarant is the mother, whose name is also written in
+    the header ("و والدتها بهمة السكتاني"). A word that differs between the two readings is the same word: the
+    reading that is a first name of names.json is proposed for the other one (applied when two letters at most
+    differ); when neither is known, both are flagged."""
+    names = get_names()
+    text_units = [(i, line_units(line)) for i, line in enumerate(lines)]
+    declarant = header = None
+    for line_index, units in text_units:
+        for k, unit in enumerate(units):
+            word = surface(unit["text"])
+            if declarant is None and ar_key(word) in ("سيد", "سيده"):
+                rest = [ar_key(u["text"]) for u in units[k + 1:]]
+                kind = next((PARENT_OF_DECLARANT[r] for r in rest if r in PARENT_OF_DECLARANT), None)
+                if kind:
+                    declarant = (kind, line_index, name_after(units, k))
+    if not declarant or not declarant[2]:
+        return []
+    kind, declaration_line, declarant_span = declarant
+    for line_index, units in text_units:
+        if line_index >= declaration_line:
+            break
+        for k, unit in enumerate(units):
+            key = ar_key(unit["text"])
+            if PARENT_OF_DECLARANT.get(key) == kind and key in (ar_key("والدته"), ar_key("والدتها"), ar_key("والده"),
+                                                                ar_key("والدها")):
+                # the header's label: "من والده" / "و والدتها" (not the declarant's own "(والدتها)")
+                if header is None:
+                    header = (line_index, name_after(units, k))
+    if not header or len(header[1]) != len(declarant_span):
+        return []
+    family = child_names(lines).get("family name")
+    latin_family = " ".join(span_words(lines, family["latin"])) if family else ""
+    header_units = dict(text_units)[header[0]]
+    declarant_units = dict(text_units)[declaration_line]
+    out = []
+    for hk, dk in zip(header[1], declarant_span):
+        a, b = surface(header_units[hk]["text"]), surface(declarant_units[dk]["text"])
+        if unit_key(a) == unit_key(b):
+            continue
+        known_a, known_b = ar_key(a) in names, ar_key(b) in names
+        if latin_family and names_agree(a, latin_family) != names_agree(b, latin_family):
+            # "لحنيش" / "لحنيسن": the child's NOM LAHNICHE agrees with one reading only
+            known_a, known_b = names_agree(a, latin_family), names_agree(b, latin_family)
+            why = f"it agrees with the child's {latin_family}"
+        else:
+            why = None
+        if known_a == known_b:
+            for (line, k, word, other) in ((header[0], hk, a, b), (declaration_line, dk, b, a)):
+                if not covered(changes, line, k):
+                    out.append({"line": line, "start": k, "end": k + 1, "old": [word], "new": [other],
+                                "accepted": False, "check": True, "source": "declarant",
+                                "context": f"the declarant is the {kind}: the same name",
+                                "reason": f"the same person is written {other} on another line: click to use it"})
+            continue
+        line, k, old, new = (header[0], hk, a, b) if known_b else (declaration_line, dk, b, a)
+        if covered(changes, line, k):
+            continue
+        drop_refused_model_changes(changes, line, k)
+        distance = edit_distance(unit_key(old), unit_key(new))
+        out.append({"line": line, "start": k, "end": k + 1, "old": [old], "new": [new],
+                    "accepted": distance <= 2, "check": distance > 2, "source": "declarant",
+                    "context": f"the declarant is the {kind}: the same name, and "
+                               + (why or f"{new} is a first name of names.json"),
+                    "reason": "" if distance <= 2 else f"{distance} letters differ: check the scan"})
+    return out
+
+
+def form_word_suggestions(lines, protected_by_line, changes):
+    """A misread word of the printed form outside a value ("عمرهار" -> "عمرها"): the one form word one letter
+    away, applied (form words are not names)."""
+    out = []
+    for line_index, protected in protected_by_line.items():
+        for k, unit in enumerate(line_units(lines[line_index])):
+            word = surface(unit["text"])
+            if (k in protected or len(word) < 4 or DIGIT_OR_LATIN.search(word) or not ARABIC_WORD.search(word)
+                    or is_known(word) or covered(changes, line_index, k) or label_kind(word)):
+                continue
+            # a four-letter word only towards a longer form word ("الرق" -> "الرقم")
+            close = one_per_key(w for w in FORM_VOCABULARY if len(w) >= max(4, 9 - len(word))
+                                and abs(len(w) - len(word)) <= 1 and edit_distance(unit_key(word), unit_key(w)) <= 1)
+            if len(close) != 1:
+                continue
+            drop_refused_model_changes(changes, line_index, k)
+            out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]], "new": close,
+                        "accepted": True, "source": "form", "context": "a word of the form", "reason": ""})
+    return out
+
+
+# ---- the hour and the minute: a lost "الدقيقة" ("الواحدة و العشرين وة: الصفر") ----
+def time_words(lines):
+    """[(line, unit, text)] after "الساعة", on its line and the next one, up to "ولد" / "ولدت"."""
+    for line_index, line in enumerate(lines):
+        units = line_units(line)
+        start = next((k + 1 for k, u in enumerate(units) if unit_key(u["text"]) in ("الساعة", "ساعة")), None)
+        if start is None:
+            continue
+        out = []
+        for at in (line_index, line_index + 1):
+            if at >= len(lines):
+                break
+            for k, unit in enumerate(line_units(lines[at])):
+                if at == line_index and k < start:
+                    continue
+                if surface(unit["text"]) in ("ولد", "ولدت") or label_kind(surface(unit["text"])):
+                    return out
+                out.append((at, k, unit["text"]))
+        return out
+    return []
+
+
+def minute_label(lines, changes):
+    """The minute's label lost or misread: the hour phrase then swallows the minute ("الواحدة و العشرين وة
+    الصفر" is no hour). The split where both the hour and the minute are phrases of the time dictionary gets
+    "و الدقيقة" back, in place of a fragment of it ("وة") or before the minute. Proposed; applied by the record
+    judge (propose) when the hour and the minute become readable."""
+    from converter import time_value
+    words = time_words(lines)
+    texts = [surface(w[2]) for w in words]
+    if not words or any(edit_distance(unit_key(w), "الدقيقة") <= 2 or "دقيق" in w for w in texts):
+        return []
+
+    def readable(phrase):
+        return bool(phrase) and isinstance(time_value(" ".join(phrase)), int)
+
+    found = []
+    for j in range(1, len(words)):
+        hour, rest = texts[:j], texts[j:]
+        fragment = (not is_known(rest[0]) and len(rest[0]) <= 4 and rest[0][:1] in ("و", "د", "ق")
+                    and set(unit_key(rest[0])) <= set("والدقيقة"))
+        minute = rest[1:] if fragment else (rest[1:] if rest[0] == "و" else rest)
+        if hour and hour[-1] == "و":
+            hour = hour[:-1]
+        if readable(hour) and readable(minute) and not readable(texts):
+            found.append((j, fragment))
+    if len(found) != 1:
+        return []   # no split or several: the person reads the scan
+    j, fragment = found[0]
+    line, k, text = words[j]
+    if covered(changes, line, k):
+        return []
+    drop_refused_model_changes(changes, line, k)
+    if fragment:
+        new = ["و", "الدقيقة"]
+    elif text == "و":
+        new = ["و", "الدقيقة"]
+    else:
+        new = (["الدقيقة"] if texts[j - 1] == "و" else ["و", "الدقيقة"]) + [text]
+    return [{"line": line, "start": k, "end": k + 1, "old": [text], "new": new, "accepted": False,
+             "source": "time", "context": "the minute's label, lost by the recognition",
+             "reason": "not applied: the hour and the minute were not readable with it"}]
+
+
+def judge_by_record(text, changes, sources):
+    """Apply the refused changes of these sources that make the record better (an error less, nothing worse)."""
+    accepted = {i for i, c in enumerate(changes) if c["accepted"]}
+    errors, mismatches = record_problems(apply_changes(text, changes, accepted))
+    for i, change in enumerate(changes):
+        if change["accepted"] or change.get("source") not in sources:
+            continue
+        new_errors, new_mismatches = record_problems(apply_changes(text, changes, accepted | {i}))
+        if new_errors < errors and new_mismatches <= mismatches:
+            changes[i] = {**change, "accepted": True, "reason": "",
+                          "context": change["context"] + ": the record reads one more field"}
+            accepted.add(i)
+            errors, mismatches = new_errors, new_mismatches
+
+
+# ---- dates written in words, as on the certificates: the proposal of a date the Hijri one gives ----
+UNITS = ("", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة")
+TEENS = ("عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر", "ستة عشر", "سبعة عشر",
+         "ثمانية عشر", "تسعة عشر")
+TENS = ("", "", "عشرين", "ثلاثين", "أربعين", "خمسين", "ستين", "سبعين", "ثمانين", "تسعين")
+HUNDREDS = ("", "مائة", "مائتين", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة")
+ORDINALS = ("", "فاتح", "ثاني", "ثالث", "رابع", "خامس", "سادس", "سابع", "ثامن", "تاسع", "عاشر")
+
+
+def year_words(year):
+    """2003 -> "ألفين و ثلاثة", 1981 -> "ألف و تسعمائة و واحد و ثمانين"."""
+    parts = ["ألف" if year // 1000 == 1 else "ألفين"]
+    if (year % 1000) // 100:
+        parts.append(HUNDREDS[(year % 1000) // 100])
+    rest = year % 100
+    if 0 < rest < 10:
+        parts.append(UNITS[rest])
+    elif 10 <= rest < 20:
+        parts.append(TEENS[rest - 10])
+    elif rest:
+        parts.append(f"{UNITS[rest % 10]} و {TENS[rest // 10]}" if rest % 10 else TENS[rest // 10])
+    return " و ".join(parts)
+
+
+def day_words(day):
+    """28 -> "ثامن و عشري", 13 -> "ثالث عشر", 1 -> "فاتح"."""
+    if day <= 10:
+        return ORDINALS[day]
+    if day < 20:
+        return ("حادي" if day == 11 else ORDINALS[day - 10]) + " عشر"
+    if day % 10 == 0:
+        return TENS[day // 10]
+    unit = "حادي" if day % 10 == 1 else ORDINALS[day % 10]
+    return f"{unit} و " + ("عشري" if day < 30 else "ثلاثين")
+
+
+def gregorian_words(date):
+    return f"{day_words(date.day)} {GREGORIAN_MONTHS[date.month - 1]} سنة {year_words(date.year)}"
+
+
+def reads_as(field, phrase):
+    """The value the converter reads from this phrase for a date field ("2003-11-28")."""
+    import converter
+    from common import TEMPLATE
+    return str(converter.convert({**TEMPLATE, field: phrase}).get(field, ""))
+
+
+def year_proposal(text, changes, record, lines, line_index, hijri, gregorian, h, g):
+    """"ثاني مارس سنة ... تسعة و ستين" next to 10 Dhu al-Qa'da 1385 (2 March 1966): the day and the month are
+    those of the Hijri date, only the year differs. The year the Hijri date gives is proposed in orange (never
+    applied by the rules: the registry sometimes writes another year on purpose)."""
+    import datetime
+    try:
+        expected = hijri_to_gregorian(*map(int, h.split("-")))
+        read = datetime.date(*map(int, g.split("-")))
+    except ValueError:
+        return None
+    if read.year == expected.year:
+        return None
+    try:
+        same_day = abs((read.replace(year=expected.year) - expected).days) <= 2
+    except ValueError:
+        return None
+    if not same_day:
+        return None   # the day and month differ too: not a misread year
+    units = line_units(lines[line_index])
+    start = next((k + 1 for k, u in enumerate(units) if ar_key(u["text"]) in ("سنه", "لسنه")), None)
+    end = next((k for k, u in enumerate(units) if start is not None and k >= start
+                and surface(u["text"]).startswith("ميلادي")), len(units))
+    if start is None or end <= start or any(c["line"] == line_index and c["start"] < end
+                                            and max(c["end"], c["start"] + 1) > start for c in changes):
+        return None
+    new = year_words(expected.year).split()
+    change = {"line": line_index, "start": start, "end": end, "old": [u["text"] for u in units[start:end]],
+              "new": new, "accepted": True}
+    base = {i for i, c in enumerate(changes) if c["accepted"]}
+    trial = record_of(apply_changes(text, changes + [change], base | {len(changes)}))[0]
+    if str(trial.get(gregorian)) != read.replace(year=expected.year).isoformat():
+        return None
+    return {**change, "accepted": False, "check": True, "source": "dates",
+            "context": f"the year of the Hijri date {h}",
+            "reason": f"the day and the month are those of the Hijri date ({expected.isoformat()}), only the year "
+                      f"differs ({read.year}): click to use {expected.year}"}
+
+
+GREGORIAN_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "ماي", "يونيو", "يوليوز", "غشت", "شتنبر", "أكتوبر",
+                    "نونبر", "دجنبر")
+
+
+def date_flags(text, changes):
+    """A Gregorian date that cannot be read next to a Hijri date that can: flagged with the date the Hijri one
+    gives ("≠ 28 نونبر 2003"), so the person knows what to look for on the scan. The Gregorian dates are
+    found in the order of the form: the child, the father, the mother, the declaration ("موافق" lines)."""
+    record, _ = record_of(apply_changes(text, changes))
+    lines = text.split("\n")
+    agree_lines = [i for i, line in enumerate(lines) if re.search(r"(?:^|\s)و?الموافق|(?:^|\s)موافق", line)]
+    order = ("DATENAISSAR", "DATENAISSPEREAR", "DATENAISSMEREAR", "DATEDECLAAR")
+    present = [h for h in order if str(record.get(h, "")).strip()]
+    if len(agree_lines) != len(present):
+        return []   # the form is not the usual one: no guess about which line is which date
+    flags = []
+    gregorian_of = dict(DATE_PAIRS)
+    for hijri, line_index in zip(present, agree_lines):
+        h, g = str(record.get(hijri, "")), str(record.get(gregorian_of[hijri], ""))
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", h) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", g):
+            year_check = year_proposal(text, changes, record, lines, line_index, hijri, gregorian_of[hijri], h, g)
+            if year_check:
+                flags.append(year_check)
+            continue
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", h):
+            continue   # (a lone year next to a full Hijri date: the day and month were not read)
+        try:
+            expected = hijri_to_gregorian(*map(int, h.split("-")))
+        except ValueError:
+            continue
+        units = line_units(lines[line_index])
+        start = next((k + 1 for k, u in enumerate(units) if re.search("موافق", u["text"])), 0)
+        end = next((k for k, u in enumerate(units) if k >= start and surface(u["text"]).startswith("ميلادي")),
+                   len(units))
+        last = max((k for k, u in enumerate(units) if surface(u["text"]).startswith("ميلادي")), default=len(units))
+        if end <= start:
+            continue
+        for k in range(start, max(end, last)):   # the refused proposals under the date: the date says it all
+            drop_refused_model_changes(changes, line_index, k)
+            for change in [c for c in changes if c["line"] == line_index and c["start"] == k and not c["accepted"]
+                           and c.get("source") == "date_time.json"]:
+                changes.remove(change)
+        if any(c["line"] == line_index and c["start"] < max(end, last) and max(c["end"], c["start"] + 1) > start
+               for c in changes):
+            continue   # another change on these words: shown alone (no overlapping marks)
+        told = f"{expected.day} {GREGORIAN_MONTHS[expected.month - 1]} {expected.year}"
+        # the words of that date (and the day before / after: the calendar of Morocco can differ by a day): the
+        # misread words up to the last "ميلادية" of the line are replaced ("ثامن من دعر رسنة ميلادية الفينة"),
+        # or up to the end of the line when the year is written on the next one ("سامع عشر دجرة" / "سنة ...")
+        import datetime
+        milad = [k for k, u in enumerate(units) if surface(u["text"]).startswith("ميلادي")]
+        last = max(milad) if milad else len(units)
+        # the whole date when the line ends with "ميلادية"; the day and month only when the year is on the next line
+        with_year = bool(milad) or any(ar_key(u["text"]) in ("سنه", "لسنه") for u in units[start:last])
+        old = [u["text"] for u in units[start:last]]
+        options = []
+        if last > start:
+            base = {i for i, c in enumerate(changes) if c["accepted"]}
+            for shift in (0, -1, 1):
+                date = expected + datetime.timedelta(days=shift)
+                words = (gregorian_words(date) if with_year else
+                         f"{day_words(date.day)} {GREGORIAN_MONTHS[date.month - 1]}").split()
+                trial = changes + [{"line": line_index, "start": start, "end": last, "old": old, "new": words,
+                                    "accepted": True}]
+                # kept only when the record read with it has this date (the converter reads the words back)
+                if str(record_of(apply_changes(text, trial, base | {len(changes)}))[0].get(gregorian_of[hijri])) \
+                        == date.isoformat():
+                    options.append(words)
+        if options:
+            # the day closest to what was read first ("سامع عشر": the 17th, not the 18th)
+            read = unit_key(" ".join(old))
+            options.sort(key=lambda o: -SequenceMatcher(None, read, unit_key(" ".join(o))).ratio())
+            likeness = SequenceMatcher(None, read, unit_key(" ".join(options[0]))).ratio()
+            # applied when the reading and the Hijri date confirm each other (a few letters misread);
+            # otherwise a check: shown in orange, applied by a click
+            accepted = likeness >= 0.75
+            flags.append({"line": line_index, "start": start, "end": last, "old": old, "new": options[0],
+                          "options": options, "accepted": accepted, "check": not accepted, "source": "dates",
+                          "context": f"the date of the Hijri date {h}" + (", close to what was read" if accepted else ""),
+                          "reason": "" if accepted else
+                                    f"the Gregorian date cannot be read; the Hijri date {h} falls on {told} "
+                                    "(± 1 day, click again for the day before / after)"})
+            continue
+        flags.append({"line": line_index, "start": start, "end": end,
+                      "old": [u["text"] for u in units[start:end]], "new": [u["text"] for u in units[start:end]],
+                      "accepted": False, "flag": True, "source": "dates", "context": f"≠ {told}",
+                      "reason": f"cannot be read as a date; the Hijri date {h} falls on {told} (± 2 days)"})
+    return flags
+
+
+ADDRESS_NUMBER_LABELS = frozenset(ar_key(w) for w in ("زنقة", "رقم", "عمارة", "الشطر", "شقة", "درب", "بلوك"))
+
+
+def address_numbers(lines, start_words, stop_words):
+    """{label: (number, line, unit)} of the first address after one of start_words, up to a stop word."""
+    numbers, inside = {}, False
+    for line_index, line in enumerate(lines):
+        units = line_units(line)
+        for k, unit in enumerate(units):
+            key = ar_key(unit["text"])
+            if not inside:
+                inside = key in start_words
+                continue
+            if key in stop_words or (numbers and key in start_words):
+                return numbers
+            label = next((l for l in ADDRESS_NUMBER_LABELS if key == l or (len(key) >= 2 and edit_distance(key, l) <= 1
+                                                                           and len(l) >= 3)), None)
+            number = next((units[j] for j in range(k + 1, min(k + 3, len(units))) if units[j]["text"].isdigit()), None)
+            if label and number is not None:
+                numbers.setdefault(label, (number["text"], line_index, units.index(number)))
+        if inside and numbers and any(ar_key(u["text"]) in ("بناء", "بناءا") for u in units):
+            return numbers
+    return numbers
+
+
+def address_flags(lines, changes):
+    """The parents' address and the declarant's address: the same street / house number twice. A number
+    that differs ("الزنقة 11" / "الزنقة 12") is flagged on both (digits are never corrected: the scan tells
+    which one is right)."""
+    stop = {ar_key(w) for w in ("حرفتها", "حرفته", "بناءا", "بناء", "وحرر", "حرر", "تحت")}
+    parents = address_numbers(lines, {ar_key("الساكنان")}, stop | {ar_key("الساكن")})
+    declaration_lines = next((i for i, l in enumerate(lines) if re.search(r"بناء", l)), None)
+    if not parents or declaration_lines is None:
+        return []
+    declarant = address_numbers(lines[declaration_lines:], {ar_key("الساكن"), ar_key("الساكنة")},
+                                {ar_key("وحرر"), ar_key("حرر")})
+    flags = []
+    for label, (number, line_index, k) in parents.items():
+        other = declarant.get(label)
+        if not other or other[0] == number:
+            continue
+        other_line = other[1] + declaration_lines
+        for (value, at_line, at_unit), against in (((number, line_index, k), other[0]),
+                                                    ((other[0], other_line, other[2]), number)):
+            if covered(changes, at_line, at_unit):
+                continue
+            flags.append({"line": at_line, "start": at_unit, "end": at_unit + 1, "old": [value], "new": [against],
+                          "accepted": False, "check": True, "source": "address",
+                          "context": "the number of the other address",
+                          "reason": f"the same address gives {against} on another line: click to use it"})
+    return flags
 
 
 # labels that the HTR sometimes glues to the previous word ("العربجننسيته" = "العربي" + "جنسيته")
@@ -1218,6 +1960,51 @@ def day_gaps(text):
     return gaps
 
 
+def record_dates(text):
+    """The dates and times the record reads from this text (to tell options that change nothing apart)."""
+    record, _ = record_of(text)
+    return tuple(str(record.get(field, "")) for pair in DATE_PAIRS for field in pair) + (
+        str(record.get("HEURENAISS", "")), str(record.get("MINNAISS", "")))
+
+
+def joint_date_fixes(text, changes):
+    """Two misread words of the same date ("سامع عشر دجرة": day and month): neither makes the date valid alone,
+    so they are judged together. The pair (and its options) that makes the record better and whose Hijri date
+    falls on its Gregorian date (3 days at most) is applied when it is the only one."""
+    words = date_words()
+    candidates = [i for i, c in enumerate(changes)
+                  if not c["accepted"] and c.get("source") == "date_time.json" and c["old"] and c["new"]
+                  and all(all(surface(w) in words for w in o) for o in (c.get("options") or [c["new"]]))]
+    if len(candidates) < 2:
+        return
+    accepted = {i for i, c in enumerate(changes) if c["accepted"]}
+    errors, mismatches = record_problems(apply_changes(text, changes, accepted))
+    from itertools import combinations, product
+    for a, b in combinations(candidates, 2):
+        if changes[a]["line"] != changes[b]["line"] or changes[a]["accepted"] or changes[b]["accepted"]:
+            continue
+        good = []
+        for oa, ob in product(changes[a].get("options") or [changes[a]["new"]],
+                              changes[b].get("options") or [changes[b]["new"]]):
+            trial_changes = list(changes)
+            trial_changes[a] = {**changes[a], "new": oa}
+            trial_changes[b] = {**changes[b], "new": ob}
+            trial = apply_changes(text, trial_changes, accepted | {a, b})
+            new_errors, new_mismatches = record_problems(trial)
+            gaps = day_gaps(trial)
+            if (new_errors < errors and new_mismatches <= mismatches and gaps
+                    and max(gaps.values()) <= 3):
+                good.append((oa, ob, new_errors, new_mismatches))
+        if len({(tuple(oa), tuple(ob)) for oa, ob, _, _ in good}) == 1:
+            oa, ob, errors, mismatches = good[0]
+            for i, option in ((a, oa), (b, ob)):
+                options = changes[i].get("options")
+                changes[i] = {**changes[i], "new": option, "accepted": True, "reason": "",
+                              "context": "with the other misread word of this date, it agrees with the Hijri date",
+                              **({"options": [option] + [o for o in options if o != option]} if options else {})}
+                accepted.add(i)
+
+
 def date_fixes(text, changes):
     """Accept the number / month corrections that make a date possible.
 
@@ -1246,9 +2033,22 @@ def date_fixes(text, changes):
             trial_changes[i] = {**changes[i], "new": option}
             trial = apply_changes(text, trial_changes, accepted | {i})
             new_errors, new_mismatches = record_problems(trial)
-            if new_errors < errors and new_mismatches <= mismatches:
+            # better: an error less, or a Gregorian / Hijri mismatch less, and nothing worse
+            if (new_errors <= errors and new_mismatches <= mismatches
+                    and (new_errors, new_mismatches) != (errors, mismatches)):
                 good.append((option, trial, new_errors, new_mismatches))
         context = "the date becomes possible and agrees with the Hijri date"
+        if len(good) > 1:
+            # options that give the same dates ("ثلاثة" / "ثلاث" / "ثلاثه": 2003) are one choice: the closest
+            # spelling to what was read is kept
+            by_dates = {}
+            for entry in good:
+                by_dates.setdefault(record_dates(entry[1]), []).append(entry)
+            if len(by_dates) == 1:
+                old = "".join(map(unit_key, changes[i]["old"]))
+                # a misread letter before a lost one ("ثلاثن": "ثلاثة", not "ثلاث")
+                good = [min(good, key=lambda e: (edit_distance(old, "".join(map(unit_key, e[0]))),
+                                                 abs(len(old) - len("".join(map(unit_key, e[0])))), e[0]))]
         if len(good) > 1:
             # only the date pairs the options change are compared (another pair may be off for its own reasons)
             per_option = [day_gaps(trial) for _, trial, _, _ in good]
