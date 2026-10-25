@@ -660,8 +660,10 @@ def describe(change):
     if change.get("flag"):
         return (f"line {change['line'] + 1}: {' '.join(change['old'])!r} {change['reason']} "
                 "(no correction found, check the scan)")
-    if change.get("source") == "names":
+    if change.get("source") in ("names", "split"):
         source = f" ({change['context']})"
+    elif change.get("source") == "date_time.json":
+        source = f" (date_time.json{', ' + change['context'] if change.get('context') else ''})"
     elif change.get("source") == "jobs.json":
         source = " (jobs.json" + (", " + change["context"] if change.get("context") else "") + ")"
     else:
@@ -701,7 +703,7 @@ def merge_line(original, proposed, line_number, notes, vocabulary=None, protecte
 # local model (Ollama)
 # ---------------------------------------------------------------------------------------------------------
 PROMPT = """You correct the spelling of Moroccan Arabic birth certificates read by a handwriting recognition model.
-The user sends a JSON object {"lines": [...]}, one string per line of the document.
+The user sends a JSON object {"lines": [{"id": 1, "text": "..."}, ...]}, one object per line of the document.
 
 Correct ONLY spelling mistakes made by the reading model:
 - a missing, extra, doubled or wrong letter in a word ("البيتت" -> "البيت", "موفق" -> "موافق"),
@@ -713,7 +715,8 @@ number by another number. NEVER change: personal names, family names, place name
 (PRENOM, NOM and the French names), punctuation, the order of the words. Never add or remove a word, never
 rephrase, never translate, never complete missing information. When unsure, keep the word as it is.
 
-Return ONLY a JSON object {"lines": [...]} with exactly as many strings as the input, in the same order."""
+Return ONLY a JSON object {"lines": [{"id": 1, "text": "..."}, ...]}: one object per input line, with the same
+"id". Never split a line in two and never join two lines, even when a word seems to belong to the next line."""
 
 
 def ollama_url(path):
@@ -754,11 +757,60 @@ def ollama_json(system, payload, model=None):
 
 
 def ask_model(lines, model=None):
-    """Lines -> the model's corrected lines (list of str), or raise."""
-    proposed = ollama_json(PROMPT, {"lines": lines}, model).get("lines")
-    if not isinstance(proposed, list) or not all(isinstance(line, str) for line in proposed):
+    """Lines -> the model's corrected lines, one per input line (see align_answer), or raise."""
+    payload = {"lines": [{"id": n, "text": line} for n, line in enumerate(lines, 1)]}
+    return align_answer(lines, ollama_json(PROMPT, payload, model).get("lines"))
+
+
+def align_answer(lines, answer):
+    """The model's answer -> exactly one proposed line per input line.
+
+    The lines are numbered, so the answer is matched by "id": a line the model split in two (two objects with
+    the same id) is joined again, a line it forgot stays as it was, an unknown id is ignored. An answer of plain
+    strings is matched by position when the count is right, otherwise by similarity (a split line is joined
+    again). One misbehaving line never costs the corrections of the others.
+    """
+    if not isinstance(answer, list):
         raise ValueError("the model did not return a list of lines")
-    return proposed
+    if all(isinstance(entry, dict) for entry in answer):
+        by_id = {}
+        for entry in answer:
+            try:
+                number = int(entry.get("id"))
+            except (TypeError, ValueError):
+                continue
+            text = entry.get("text")
+            if isinstance(text, str) and 1 <= number <= len(lines):
+                by_id.setdefault(number, []).append(text)
+        if not by_id:
+            raise ValueError("the model returned no usable line")
+        return [" ".join(by_id[n]) if n in by_id else line for n, line in enumerate(lines, 1)]
+    texts = [entry for entry in answer if isinstance(entry, str)]
+    if len(texts) == len(lines):
+        return texts
+    return align_by_similarity(lines, texts)
+
+
+def align_by_similarity(lines, texts):
+    """Proposed lines whose count differs from the input: each input line takes the proposed line(s) most like
+    it, in order (two consecutive proposed lines are joined when together they match better)."""
+    def ratio(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+
+    out, j = [], 0
+    for line in lines:
+        if j >= len(texts):
+            out.append(line)
+            continue
+        best, take = ratio(line, texts[j]), 1
+        if j + 1 < len(texts) and ratio(line, texts[j] + " " + texts[j + 1]) > best:
+            best, take = ratio(line, texts[j] + " " + texts[j + 1]), 2
+        if best < 0.5:   # nothing alike: the line is kept
+            out.append(line)
+            continue
+        out.append(" ".join(texts[j:j + take]))
+        j += take
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1006,9 +1058,6 @@ def propose(text, model=None):
     proposed = None
     try:
         proposed = ask_model([lines[i] for i in positions], model)
-        if len(proposed) != len(positions):
-            notes.append(f"spelling model skipped: it returned {len(proposed)} lines for {len(positions)}")
-            proposed = None
     except PermissionError as e:
         notes.append(f"spelling model skipped: {e}")
     except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
@@ -1030,6 +1079,9 @@ def propose(text, model=None):
     changes.extend(job_changes(text, lines, protected_by_line, changes))
     # the child's names: the Arabic and the Latin reading are compared (proposals, never applied by default)
     changes.extend(name_changes(lines, changes, notes, model, use_model=model_ok))
+    # a label glued to the previous word is split again; misread date words get the dictionary's word
+    changes.extend(glued_labels(lines, changes))
+    changes.extend(date_word_suggestions(lines, protected_by_line, changes))
     changes = sorted(changes, key=lambda c: (c["line"], c["start"]))
     # numbers: judged by the whole record (a misread year makes a date impossible)
     date_fixes(text, changes)
@@ -1047,46 +1099,175 @@ def number_words():
     return frozenset(words)
 
 
-def record_problems(text):
-    """(errors, Gregorian / Hijri mismatches) of the record the rules read from this text (no NER, no Groq)."""
+@lru_cache(maxsize=None)
+def date_words():
+    """Number and month words of date_time.json, as written (with and without the article)."""
+    words = set(number_words())
+    for section in ("hijri_months", "miladi_months"):
+        for aliases in dates_data.get(section, {}).values():
+            for alias in aliases if isinstance(aliases, list) else []:
+                for word in surface(str(alias)).split():
+                    words.update({word, word[2:] if word.startswith("ال") else "ال" + word})
+    return frozenset(w for w in words if len(w) >= 3)
+
+
+def date_word_suggestions(lines, protected_by_line, changes):
+    """A misread number or month word ("ثالن") gets the words of date_time.json one letter away ("ثالث",
+    "ثامن") as a proposal, with or without the model. It is applied only when it makes a date of the record
+    valid, and with several words only when one of them makes the Hijri and Gregorian dates agree to the day
+    (date_fixes); otherwise it stays a refused proposal (the person can choose)."""
+    words = date_words()
+    covered = {(c["line"], k) for c in changes for k in range(c["start"], max(c["end"], c["start"] + 1))}
+    out = []
+    for line_index, protected in protected_by_line.items():
+        for k, unit in enumerate(line_units(lines[line_index])):
+            word = surface(unit["text"])
+            if (k in protected or (line_index, k) in covered or len(word) < 3 or not ARABIC_WORD.search(word)
+                    or DIGIT_OR_LATIN.search(word) or is_known(word)):
+                continue
+            key = unit_key(word)
+            close = sorted({w for w in words if abs(len(w) - len(word)) <= 1 and edit_distance(key, unit_key(w)) <= 1})
+            if 1 <= len(close) <= 3:
+                out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]], "new": [close[0]],
+                            "options": [[w] for w in close], "accepted": False,
+                            "reason": "not applied: no date of the record needed it" if len(close) == 1 else
+                                      "several words are possible: " + " / ".join(close),
+                            "source": "date_time.json"})
+    return out
+
+
+# labels that the HTR sometimes glues to the previous word ("العربجننسيته" = "العربي" + "جنسيته")
+GLUED_LABELS = ("جنسيته", "جنسيتها", "حرفته", "حرفتها", "مهنته", "مهنتها", "المولود", "المولودة",
+                "الساكن", "الساكنان")
+
+
+def glued_labels(lines, changes):
+    """A label glued to the word before it is split again: "العربجننسيته" -> "العرب جنسيته" (the label also
+    corrected, one letter at most; the first word is kept as read). Without the space the parser reads the
+    nationality as a part of the name. Applied by default; any model change on the word is replaced."""
+    out = []
+    for line_index, line in enumerate(lines):
+        for k, unit in enumerate(line_units(line)):
+            word = surface(unit["text"])
+            if len(word) < 7 or not ARABIC_WORD.search(word):
+                continue
+            best = None
+            for label in GLUED_LABELS:
+                for size in (len(label) - 1, len(label), len(label) + 1):
+                    head, tail = word[:-size], word[-size:]
+                    if len(head) < 2 or size <= 0 or tail[0] != label[0]:
+                        continue   # the label starts where its first letter is ("عادل" + "جننسيته")
+                    distance = edit_distance(tail, label)
+                    if distance <= 1 and (best is None or (distance, -len(label)) < (best[0], -len(best[2]))):
+                        best = (distance, head, label)
+            if best and not is_known(word):
+                for change in [c for c in changes if c["line"] == line_index and c["start"] <= k < max(c["end"], c["start"] + 1)]:
+                    changes.remove(change)
+                out.append({"line": line_index, "start": k, "end": k + 1, "old": [unit["text"]],
+                            "new": [best[1], best[2]], "accepted": True, "reason": "", "source": "split",
+                            "context": "a label glued to the word before it"})
+    return out
+
+
+def hijri_to_gregorian(year, month, day):
+    """Tabular (arithmetic) Hijri calendar -> Gregorian date: one or two days from the observed calendar of
+    Morocco, which is close enough to tell "ثالث" (3rd) from "ثامن" (8th)."""
+    import datetime
+    import math
+    jd = day + math.ceil(29.5 * (month - 1)) + (year - 1) * 354 + (3 + 11 * year) // 30 + 1948439.5 - 1
+    return datetime.date.fromordinal(int(jd - 1721424.5))
+
+
+DATE_PAIRS = (("DATENAISSAR", "DATENAISSFR"), ("DATEDECLAAR", "DATEDECLAFR"),
+              ("DATENAISSPEREAR", "DATENAISSPEREFR"), ("DATENAISSMEREAR", "DATENAISSMEREFR"))
+
+
+def record_of(text):
+    """The record the rules read from this text (no NER, no Groq) and its validation issues."""
     import converter
     import mapper
     import parser as record_parser
     import validator
 
     record = mapper.map_fields(converter.convert(record_parser.parse(text, None)))
-    issues = validator.validate(record, check_translation=False)["issues"]
+    return record, validator.validate(record, check_translation=False)["issues"]
+
+
+def record_problems(text):
+    """(errors, Gregorian / Hijri mismatches) of the record the rules read from this text (no NER, no Groq)."""
+    _, issues = record_of(text)
     errors = sum(1 for i in issues if i["level"] == "error")
     mismatches = sum(1 for i in issues if "do not match" in i["message"])
     return errors, mismatches
 
 
+def day_gaps(text):
+    """{date pair: days between its full Hijri date and its Gregorian date} for the record read from the text."""
+    import datetime
+    record, _ = record_of(text)
+    gaps = {}
+    for hijri, gregorian in DATE_PAIRS:
+        h, g = str(record.get(hijri, "")), str(record.get(gregorian, ""))
+        if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", h) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", g)):
+            continue
+        try:
+            converted = hijri_to_gregorian(*map(int, h.split("-")))
+            gaps[hijri] = abs((datetime.date(*map(int, g.split("-"))) - converted).days)
+        except ValueError:
+            continue
+    return gaps
+
+
 def date_fixes(text, changes):
-    """Accept the number corrections that make a date possible.
+    """Accept the number / month corrections that make a date possible.
 
     "سنة ألفين و ثمانين" (2080) next to the Hijri year 1428 is a misreading of "ثمانية" (2008), although
-    "ثمانين" is a correct word. A refused change of number words (1 or 2 letters) is accepted when the record
-    read with it has fewer errors (a year in the future, a declaration before the birth ...) and no new
-    Gregorian / Hijri mismatch: the validator of the whole record is the judge.
+    "ثمانين" is a correct word. A refused change towards number or month words (1 or 2 letters) is accepted when
+    the record read with it has fewer errors (an invalid date, a year in the future, a declaration before the
+    birth ...) and no new Gregorian / Hijri mismatch: the validator of the whole record is the judge. When
+    several words are possible ("ثالن": "ثالث" or "ثامن"), the one whose Hijri date falls on its Gregorian date
+    (3 days at most, and 3 days better than the others) is chosen.
     """
-    numbers = number_words()
+    words = date_words()
     candidates = [i for i, c in enumerate(changes)
-                  if not c["accepted"] and c["old"] and c["new"] and c.get("source") != "jobs.json"
-                  and all(surface(w) in numbers for w in c["old"] + c["new"])
+                  if not c["accepted"] and c["old"] and c["new"] and c.get("source") not in ("jobs.json", "names")
+                  and not c.get("flag")
+                  and all(all(surface(w) in words for w in option) for option in (c.get("options") or [c["new"]]))
                   and edit_distance("".join(map(unit_key, c["old"])), "".join(map(unit_key, c["new"]))) <= 2]
     if not candidates:
         return
     accepted = {i for i, c in enumerate(changes) if c["accepted"]}
-    base = apply_changes(text, changes, accepted)
-    errors, mismatches = record_problems(base)
+    errors, mismatches = record_problems(apply_changes(text, changes, accepted))
     for i in candidates:
-        trial = apply_changes(text, changes, accepted | {i})
-        new_errors, new_mismatches = record_problems(trial)
-        if new_errors < errors and new_mismatches <= mismatches:
-            changes[i] = {**changes[i], "accepted": True, "reason": "",
-                          "context": "the date becomes possible and agrees with the Hijri date"}
+        options = changes[i].get("options") or [changes[i]["new"]]
+        good = []
+        for option in options:
+            trial_changes = list(changes)
+            trial_changes[i] = {**changes[i], "new": option}
+            trial = apply_changes(text, trial_changes, accepted | {i})
+            new_errors, new_mismatches = record_problems(trial)
+            if new_errors < errors and new_mismatches <= mismatches:
+                good.append((option, trial, new_errors, new_mismatches))
+        context = "the date becomes possible and agrees with the Hijri date"
+        if len(good) > 1:
+            # only the date pairs the options change are compared (another pair may be off for its own reasons)
+            per_option = [day_gaps(trial) for _, trial, _, _ in good]
+            pairs = {p for gaps in per_option for p in gaps
+                     if len({gaps_.get(p) for gaps_ in per_option}) > 1 and all(p in g for g in per_option)}
+            if not pairs:
+                continue   # the dates cannot tell: the person chooses among the options
+            totals = sorted((sum(gaps[p] for p in pairs), n) for n, gaps in enumerate(per_option))
+            best_gap, best = totals[0]
+            if best_gap > 3 * len(pairs) or any(total < best_gap + 3 for total, _ in totals[1:]):
+                continue
+            good = [good[best]]
+            context = f"the Hijri date falls on the Gregorian date ({best_gap} day(s) apart)"
+        if len(good) == 1:
+            option, _, errors, mismatches = good[0]
+            rest = [o for o in options if o != option]
+            changes[i] = {**changes[i], "new": option, "accepted": True, "reason": "", "context": context,
+                          **({"options": [option] + rest} if changes[i].get("options") else {})}
             accepted.add(i)
-            errors, mismatches = new_errors, new_mismatches
 
 
 def correct_text(text, model=None):

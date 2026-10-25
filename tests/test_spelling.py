@@ -67,6 +67,7 @@ def test_merge_line_keeps_only_the_accepted_changes():
 class FakeOllama(BaseHTTPRequestHandler):
     answer = None          # function: list of lines -> list of lines (or a raw string)
     names_answer = None    # function: list of names -> list of {"arabic", "latin"} (default: unchanged)
+    with_ids = True        # answer with numbered lines (False: plain strings)
     requests = []
 
     def do_POST(self):
@@ -78,8 +79,13 @@ class FakeOllama(BaseHTTPRequestHandler):
                                                                 "latin_of_arabic": n["latin"]} for n in names])
             content = json.dumps({"names": answer(payload["names"])}, ensure_ascii=False)
         else:
-            content = FakeOllama.answer(payload["lines"])
+            # the lines are numbered: {"id", "text"}; the answer keeps the ids when it has one line per input
+            entries = payload["lines"]
+            texts = [e["text"] if isinstance(e, dict) else e for e in entries]
+            content = FakeOllama.answer(texts)
             if not isinstance(content, str):
+                if FakeOllama.with_ids and len(content) == len(entries):
+                    content = [{"id": e["id"], "text": t} for e, t in zip(entries, content)]
                 content = json.dumps({"lines": content}, ensure_ascii=False)
         data = json.dumps({"message": {"role": "assistant", "content": content}}).encode("utf-8")
         self.send_response(200)
@@ -100,6 +106,7 @@ def ollama(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", f"http://127.0.0.1:{server.server_port}")
     FakeOllama.requests = []
     FakeOllama.names_answer = None
+    FakeOllama.with_ids = True
     yield FakeOllama
     server.shutdown()
 
@@ -136,14 +143,63 @@ def test_correct_text_with_a_local_model(ollama):
     assert request["stream"] is False and request["format"] == "json" and request["options"]["temperature"] == 0
 
 
-def test_correct_text_keeps_the_text_when_the_model_misbehaves(ollama):
+def test_one_bad_line_does_not_cancel_the_others(ollama):
+    """The model forgets the last line: the corrections of the other lines are still used."""
     _, damaged = damaged_sample()
-    ollama.answer = lambda lines: lines[:-1]                          # one line missing
+    ollama.answer = lambda lines: [l.replace("موفق", "موافق") for l in lines[:-1]]
     text, notes = sc.correct_text(damaged)
-    assert text == damaged and "skipped" in notes[0]
+    assert "موفق" not in text and text.count("\n") == damaged.count("\n")
     ollama.answer = lambda lines: "not json"
     text, notes = sc.correct_text(damaged)
-    assert text == damaged and "unusable answer" in notes[0]
+    assert "موفق" in text and "unusable answer" in notes[0]
+
+
+def test_a_line_split_by_the_model_is_joined_again(ollama):
+    """Qwen returned 33 lines for 32 (a name glued to 'جنسيته' put on its own line): matched by id or by
+    similarity, the split line is joined again and every other correction is kept."""
+    lines = ["رسم ولادة رقم 63", "من والدها محمد بن العربجننسيته مغربية.", "موفق ثالث يناير"]
+    by_id = [{"id": 1, "text": lines[0]}, {"id": 2, "text": "من والدها محمد بن العربي"},
+             {"id": 2, "text": "جنسيته مغربية."}, {"id": 3, "text": "موافق ثالث يناير"}]
+    assert sc.align_answer(lines, by_id) == [lines[0], "من والدها محمد بن العربي جنسيته مغربية.", "موافق ثالث يناير"]
+    plain = [lines[0], "من والدها محمد بن العربي", "جنسيته مغربية.", "موافق ثالث يناير"]
+    assert sc.align_answer(lines, plain) == sc.align_answer(lines, by_id)
+    assert sc.align_answer(lines, [{"id": 3, "text": "x"}])[:2] == lines[:2]        # forgotten lines: as read
+    ollama.with_ids = False
+    ollama.answer = lambda texts: [t.replace("موفق", "موافق") for t in texts[:1]] + \
+        ["من والدها محمد بن العربي", "جنسيته مغربية."] + [texts[2].replace("موفق", "موافق")]
+    changes, notes = sc.propose("\n".join(lines) + "\n")
+    assert not notes and any(c["old"] == ["موفق"] and c["accepted"] for c in changes)
+
+
+def test_a_glued_label_is_split_again():
+    lines = ["من والده نبيل الإدريسي بن عادلجننسيته مغربية."]
+    [change] = sc.glued_labels(lines, [])
+    assert (change["old"], change["new"], change["accepted"]) == (["عادلجننسيته"], ["عادل", "جنسيته"], True)
+    assert sc.glued_labels(["جنسيتها مغربية", "المولودة بخريبڭة"], []) == []   # labels alone: nothing
+
+
+def test_a_misread_date_word_is_chosen_by_the_calendar(monkeypatch):
+    """'ثالن ربيع الأول 1438' is 'ثالث' (3rd) or 'ثامن' (8th): the Gregorian date of the declaration decides
+    (3 Rabi' al-Awwal 1438 = 2 / 3 December 2016); a date in between decides nothing."""
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")            # no model: the dictionary alone
+    base = (read_text_file(ROOT / "samples" / "1.txt")
+            .replace("وحرر في فاتح ربيع الأول", "وحرر في ثالن ربيع الأول"))
+
+    def chosen(gregorian_day):
+        text = base.replace("موافق ثالث يناير سنة ألفين و سبعة عشرة ميلادية.",
+                            f"موافق {gregorian_day} دجنبر سنة ألفين و ستة عشرة ميلادية.")
+        [change] = [c for c in sc.propose(text)[0] if c["old"] == ["ثالن"]]
+        return change["new"][0] if change["accepted"] else None
+
+    assert chosen("ثاني") == "ثالث"
+    assert chosen("سابع") == "ثامن"
+    assert chosen("خامس") is None
+
+
+def test_hijri_to_gregorian():
+    import datetime
+    assert sc.hijri_to_gregorian(1428, 12, 23) == datetime.date(2008, 1, 2)
+    assert abs((sc.hijri_to_gregorian(1438, 1, 1) - datetime.date(2016, 10, 2)).days) <= 1
 
 
 def test_correct_text_without_ollama(monkeypatch):
@@ -303,7 +359,7 @@ def test_app_spelling_tab(ollama):
     _, _, state = app.toggle_change(state, Click())
     assert state["segments"][name_piece] in state["accepted"]
     notes = app.spelling_notes(state)
-    assert "accepted in the Spelling tab" in notes
+    assert "accepted in the spelling review" in notes
     _, _, state = app.set_all(state, False)
     assert state["accepted"] == []
     _, _, state = app.set_all(state, True)        # back to the rules: the refused name change is not accepted

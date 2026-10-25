@@ -234,16 +234,104 @@ def test_app_prepare_image(tmp_path):
         assert image.mode == "RGB"
 
 
-def test_app_view(tmp_path):
-    pytest.importorskip("gradio")
+APP_TEXT = (
+    "رسم ولادة رقم: 42\n"
+    "في يوم ثالث شوال عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
+    "موافق ثامن عشر دجنبر سنة الفين و ثلاثة ميلادية.\n"
+    "PRENOM BILAL\n"
+    "الإسم الشخصي : بلال\n"
+    "ذكر\n"
+    "من والده عبد الجبار قاسم بن محمد\n"
+    "حرفته : فلاح\n"
+    "و والدته عتيقة ممير بنت عبد العزيز.\n"
+    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
+)
+
+
+def app_document(tmp_path, text=APP_TEXT):
+    """A document of the interface without kraken: one polygon per line, parsed with the rules only."""
     import app
     from PIL import Image
     scan = tmp_path / "scan.png"
-    Image.new("RGB", (100, 50), "white").save(scan)
-    lines = [{"text": "رسم <ولادة>", "confidence": 0.5, "polygon": [[0, 0], [10, 0], [10, 5]], "baseline": []}]
-    html = app.render_view(str(scan), lines, 0.8)
-    assert "bv-poly-1" in html and "&lt;ولادة&gt;" in html and "1 under 80%" in html
-    assert app.rerender(str(tmp_path / "deleted.png"), lines, 0.8).startswith("<p>The scan")
+    Image.new("RGB", (400, 30 * 12), "white").save(scan)
+    lines = [{"text": t, "confidence": 0.5 if i == 4 else 0.95, "polygon": [[0, 30 * i], [400, 30 * i], [400, 30 * i + 25]],
+              "baseline": []} for i, t in enumerate(text.rstrip("\n").split("\n"))]
+    doc = {"folder": str(tmp_path), "image": str(scan), "name": "scan.png", "xml": "<PcGts/>", "lines": lines,
+           "htr": text, "threshold": 0.8, "log": [], "history": [text], "position": 0}
+    options = app.options_of(ner=False, french_ner=False, groq=False, spellcheck=False)
+    return app.parse_text(doc, text, options), options
+
+
+def test_app_panels_link_every_line(tmp_path):
+    """Polygon, text line and record row of the same line carry the same class ln-n (hover links them)."""
+    pytest.importorskip("gradio")
+    import app
+    doc, _ = app_document(tmp_path)
+    segmentation = app.segmentation_html(doc, 1.0, 0.8)
+    text = app.text_html(doc, 0.8)
+    table = app.record_html(doc)
+    assert 'class="md-poly ln-5"' in segmentation and 'md-line ln-5 low' in text      # line 5: 50 %
+    assert "body:has(.ln-5:hover) .ln-5" in text
+    # the father's job is read on line 8, the child's first name on lines 4 (Latin) and 5 (Arabic)
+    assert doc["field_lines"]["PROFESSIONPERE"] == [7] and set(doc["field_lines"]["PRENOMAR"]) == {4}
+    row = next(r for r in table.split("<tr") if "PROFESSIONPERE" in r)
+    assert "ln-8" in row
+    row = next(r for r in table.split("<tr") if "PRENOMAR" in r)
+    assert "ln-4" in row and "ln-5" in row
+
+
+def test_app_console(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    doc, _ = app_document(tmp_path)
+    console = app.console_html(doc, 0.8)
+    assert console.index("error(s)") < console.index("[LOW CONFIDENCE] line 5")
+    assert "low ln-5" in console
+
+
+def test_app_history_and_files(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    import zipfile
+    doc, options = app_document(tmp_path)
+    edited = app.set_text(doc, APP_TEXT.replace("فلاح", "نجار"), options, "[edit] test")
+    assert edited["record"]["PROFESSIONPERE"] == "نجار" and len(edited["history"]) == 2
+    back = app.move_in_history(edited, -1, options)
+    assert back["record"]["PROFESSIONPERE"] == "فلاح"
+    assert app.move_in_history(back, -1, options) is back               # nothing before the first version
+    again = app.move_in_history(back, 1, options)
+    assert again["record"]["PROFESSIONPERE"] == "نجار"
+    names = set(zipfile.ZipFile(again["files"]["zip"]).namelist())
+    assert names == {"scan.png", "segmentation.png", "segmentation.xml", "transcription.txt",
+                     "transcription_htr.txt", "record.json", "report.json", "report.txt"}
+
+
+def test_app_link_off_when_the_lines_change(tmp_path):
+    """A hand edit that adds a line: the text no longer matches the polygons, they are not linked."""
+    pytest.importorskip("gradio")
+    import app
+    doc, options = app_document(tmp_path)
+    doc = app.set_text(doc, APP_TEXT + "سطر زائد\n", options)
+    assert not app.segmentation_linked(doc)
+    assert "ln-1" not in app.segmentation_html(doc, 1.0, 0.8)
+    assert "no longer linked" in app.console_html(doc, 0.8)
+
+
+def test_app_views_without_a_document(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    assert "Files" in app.image_html(None, 1.0)
+    assert "Ready" in app.console_html(None, 0.8)
+    doc, _ = app_document(tmp_path)
+    deleted = dict(doc, image=str(tmp_path / "gone.png"))
+    assert "deleted" in app.image_html(deleted, 1.0)
+
+
+def test_app_builds():
+    pytest.importorskip("gradio")
+    import app
+    assert app.build_app() is not None
+
 
 # ---------------------------------------------------------------------------------------------------------
 # parser: nationalities
@@ -294,3 +382,40 @@ def test_child_nationality_not_guessed_when_the_parents_differ():
 def test_written_child_nationality_is_kept():
     values, _ = nationalities(child="جنسيته : فرنسية\n")
     assert values[0] == "فرنسية"
+
+# ---------------------------------------------------------------------------------------------------------
+# languages of the interface
+# ---------------------------------------------------------------------------------------------------------
+def test_every_text_has_three_languages():
+    import ui_text
+    for key, versions in ui_text.TEXT.items():
+        assert len(versions) == 3 and all(versions), key
+        # the same {values} in every language
+        import string
+        fields = [sorted(f for _, f, _, _ in string.Formatter().parse(v) if f) for v in versions]
+        assert fields[0] == fields[1] == fields[2], key
+    assert set(ui_text.HELP) == {"en", "fr", "ar"}
+
+
+def test_tr_writes_the_three_versions():
+    import ui_text
+    html = ui_text.tr("c_low", number=3, score="72%", text="<b>عام</b>")
+    assert 'class="l-en"' in html and 'class="l-fr"' in html and 'class="l-ar"' in html
+    assert "[LOW CONFIDENCE] line 3: 72%" in html and "[CONFIANCE FAIBLE] ligne 3" in html and "السطر 3" in html
+    assert "&lt;b&gt;" in html                                        # values are escaped
+    assert ui_text.text("save", "fr") == "💾 Enregistrer" and ui_text.text("save", "de") == "💾 Save"
+
+
+def test_notification_script_has_every_language():
+    import ui_text
+    js = ui_text.notification_js()
+    assert "Transcription terminée" in js and "انتهى الاستخراج" in js and "document.hidden" in js
+
+
+def test_app_console_in_three_languages(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    doc, _ = app_document(tmp_path)
+    console = app.console_html(doc, 0.8)
+    assert "error(s)" in console and "erreur(s)" in console and "خطأ" in console
+    assert "Champ" in app.record_html(doc) and "الحقل" in app.record_html(doc)
