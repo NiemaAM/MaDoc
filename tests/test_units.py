@@ -1,6 +1,7 @@
 """Unit tests of the helpers around the chain: file reading, kraken calls, translator output, app files.
 
-No model, no kraken, no network: kraken is replaced by a fake command and Groq is not called.
+No model, no kraken, no network: kraken is replaced by a fake command and Ollama by a
+small local HTTP server.
 
     python -m pytest tests/test_units.py
 """
@@ -182,13 +183,100 @@ def test_recognition_lines_in_logical_order(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------------------------------------
 def test_translator_messages_never_go_to_stdout(monkeypatch, capsys):
     """stdout carries the JSON record: python src/pipeline.py x.txt > record.json must stay valid JSON."""
-    monkeypatch.setattr(translator, "get_client", lambda: None)
+    import spelling_checker
+    monkeypatch.setattr(spelling_checker, "OLLAMA_URL", "http://127.0.0.1:9")    # nothing listens there
     record = dict(common.TEMPLATE, PRENOMPEREAR="محمد", PROFESSIONPERE="حداد التقليدي")
     out = translator.translate(record)
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "Groq client unavailable" in captured.err
+    assert "Translation model unavailable" in captured.err
     assert out["PROFESSIONPEREFR"] == ""          # an untranslated job stays empty, never Arabic
+    assert out["PRENOMPEREFR"] == "محمد"          # kept, the validator reports it as untranslated
+
+
+def test_translator_refuses_a_remote_ollama(monkeypatch):
+    import spelling_checker
+    monkeypatch.delenv("MADOC_SPELL_ALLOW_REMOTE", raising=False)
+    monkeypatch.setattr(spelling_checker, "OLLAMA_URL", "https://api.example.com")
+    assert "not this computer" in translator.unavailable_reason()
+    assert not translator.is_available()
+
+
+@pytest.fixture
+def translation_ollama(monkeypatch):
+    """A local stand-in of Ollama: lists the model, answers every item with ANSWER[type] (ids kept)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import spelling_checker
+
+    class Fake(BaseHTTPRequestHandler):
+        answer = {"name": "Fils de Mohamed", "address": "Khouribga", "job": "forgeron",
+                  "employee": "Lahcen Chmiti"}
+        models = [{"name": "qwen2.5:7b", "model": "qwen2.5:7b"}]
+        requests = []
+
+        def reply(self, obj):
+            data = json.dumps(obj).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self.reply({"models": Fake.models})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode("utf-8"))
+            Fake.requests.append(body)
+            items = json.loads(body["messages"][1]["content"])["items"]
+            results = [{"id": i["id"], "text": Fake.answer[i["type"]]} for i in items]
+            self.reply({"message": {"content": json.dumps({"results": results}, ensure_ascii=False)}})
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(spelling_checker, "OLLAMA_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(translator, "MODEL", "qwen2.5:7b")
+    yield Fake
+    server.shutdown()
+
+
+def test_translator_local_model(translation_ollama):
+    record = dict(common.TEMPLATE, PRENOMPEREAR="بن محمد", PROFESSIONPERE="حداد التقليدي", LIEUNAISS="خريبكة")
+    out = translator.translate(record)
+    assert out["PRENOMPEREFR"] == "Fils de Mohamed"
+    assert out["PROFESSIONPEREFR"] == "FORGERON"           # post-processed like jobs.json
+    assert out["LIEUNAISSFR"] == "Khouribga"
+    body = translation_ollama.requests[0]
+    assert body["model"] == "qwen2.5:7b" and body["format"] == "json"
+    assert translator.is_available()
+
+
+def test_translator_model_not_pulled(translation_ollama, capsys):
+    translation_ollama.models = [{"name": "llama3:8b", "model": "llama3:8b"}]
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد"))
+    assert out["PRENOMPEREFR"] == "محمد"
+    assert "ollama pull qwen2.5:7b" in capsys.readouterr().err
+    assert translation_ollama.requests == []
+
+
+def test_translator_rejects_arabic_answers(translation_ollama):
+    translation_ollama.answer = dict(translation_ollama.answer, name="محمد")
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد"))
+    assert out["PRENOMPEREFR"] == "محمد"                    # the original, never the model's Arabic
+
+
+def test_answer_results():
+    assert translator.answer_results({"results": [{"id": 2, "text": "b"}, {"id": 1, "text": "a"}]}, 2) == ["a", "b"]
+    assert translator.answer_results({"results": [{"id": 1, "text": "a"}]}, 2) == ["a", None]
+    assert translator.answer_results({"results": ["a", "b"]}, 2) == ["a", "b"]
+    assert translator.answer_results({"results": ["a"]}, 2) is None
+    assert translator.answer_results({"lines": []}, 1) is None
 
 
 def test_translator_postprocess():
@@ -258,7 +346,7 @@ def app_document(tmp_path, text=APP_TEXT):
               "baseline": []} for i, t in enumerate(text.rstrip("\n").split("\n"))]
     doc = {"folder": str(tmp_path), "image": str(scan), "name": "scan.png", "xml": "<PcGts/>", "lines": lines,
            "htr": text, "threshold": 0.8, "log": [], "history": [text], "position": 0}
-    options = app.options_of(ner=False, french_ner=False, groq=False, spellcheck=False)
+    options = app.options_of(ner=False, french_ner=False, translate=False, spellcheck=False)
     return app.parse_text(doc, text, options), options
 
 
@@ -419,3 +507,85 @@ def test_app_console_in_three_languages(tmp_path):
     console = app.console_html(doc, 0.8)
     assert "error(s)" in console and "erreur(s)" in console and "خطأ" in console
     assert "Champ" in app.record_html(doc) and "الحقل" in app.record_html(doc)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# classificator: the French NER model runs locally, on the Latin lines only
+# ---------------------------------------------------------------------------------------------------------
+import classificator  # noqa: E402
+
+NER_TEXT = "في يوم ثالث\nالاسم الشخصي زكرياء\nPRENOM ZAKARIYA\nNOM KABLI\nمن والده\n"
+
+
+def fake_ner(text):
+    """A pipeline stand-in: every upper-case word that is not a label is a PERSON."""
+    return [{"word": m.group(), "entity_group": "PERSON", "start": m.start(), "end": m.end(), "score": 0.98}
+            for m in __import__("re").finditer(r"\b(?!PRENOM|NOM)[A-Z]{2,}\b", text)]
+
+
+def test_latin_lines_offsets():
+    lines = classificator.latin_lines(NER_TEXT)
+    assert [line for _, line in lines] == ["PRENOM ZAKARIYA", "NOM KABLI"]
+    for offset, line in lines:
+        assert NER_TEXT[offset:offset + len(line)] == line
+
+
+def test_french_ner_local(monkeypatch):
+    seen = []
+    monkeypatch.setattr(classificator, "get_french_pipeline", lambda: lambda t: seen.append(t) or fake_ner(t))
+    monkeypatch.setattr(classificator, "classify_french_space", lambda t: pytest.fail("Space called"))
+    found = classificator.classify_french(NER_TEXT)
+    assert seen == ["PRENOM ZAKARIYA", "NOM KABLI"]          # the Arabic lines are never given to it
+    assert [e["entity"] for e in found] == ["ZAKARIYA", "KABLI"]
+    for e in found:                                          # offsets in the whole text, for the parser zones
+        assert NER_TEXT[e["start"]:e["end"]] == e["entity"]
+
+
+def test_french_ner_missing_model_is_reported_not_sent(monkeypatch):
+    def missing():
+        raise classificator.ModelUnavailable("not downloaded")
+    monkeypatch.delenv("MADOC_FRENCH_NER_SPACE", raising=False)
+    monkeypatch.setattr(classificator, "get_french_pipeline", missing)
+    monkeypatch.setattr(classificator, "classify_french_space", lambda t: pytest.fail("Space called"))
+    result = classificator.classify(NER_TEXT, use_arabic=False)
+    assert result["french_ner"] == [] and "not downloaded" in result["errors"][0]
+    assert result["models"]["fr"] == "TypicaAI/magbert-ner"
+
+
+def test_french_ner_space_only_when_allowed(monkeypatch):
+    def missing():
+        raise classificator.ModelUnavailable("not downloaded")
+    monkeypatch.setenv("MADOC_FRENCH_NER_SPACE", "1")
+    monkeypatch.setattr(classificator, "get_french_pipeline", missing)
+    monkeypatch.setattr(classificator, "classify_french_space", lambda t: [{"entity": "X", "label": "PERSON"}])
+    assert classificator.classify_french(NER_TEXT) == [{"entity": "X", "label": "PERSON"}]
+
+
+def test_french_ner_skipped_without_latin(monkeypatch):
+    monkeypatch.setattr(classificator, "get_french_pipeline", lambda: pytest.fail("model loaded"))
+    assert classificator.classify_french("في يوم ثالث\nمن والده\n") == []
+
+
+def test_french_ner_needs_a_sentence(monkeypatch):
+    """A model that only sees "Hicham" inside a sentence: the entity still points at "HICHAM" in the text."""
+    import re
+
+    def sentence_only(text):
+        if not text.startswith("Son "):
+            return []
+        return [{"word": m.group(), "entity_group": "PER", "start": m.start(), "end": m.end(), "score": 0.9}
+                for m in re.finditer(r"\b(?!Son\b)[A-Z][a-z]+\b", text)]
+
+    monkeypatch.setattr(classificator, "get_french_pipeline", lambda: sentence_only)
+    found = classificator.classify_french(NER_TEXT)
+    assert [e["entity"] for e in found] == ["ZAKARIYA", "KABLI"]
+    for e in found:
+        assert NER_TEXT[e["start"]:e["end"]] == e["entity"]
+
+
+def test_french_ner_drops_labels(monkeypatch):
+    def everything(text):
+        return [{"word": m.group(), "entity_group": "PER", "start": m.start(), "end": m.end(), "score": 0.5}
+                for m in __import__("re").finditer(r"\S+", text)]
+    monkeypatch.setattr(classificator, "get_french_pipeline", lambda: everything)
+    assert [e["entity"] for e in classificator.classify_french(NER_TEXT)] == ["ZAKARIYA", "KABLI"]

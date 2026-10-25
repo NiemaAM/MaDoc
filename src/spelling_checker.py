@@ -1183,7 +1183,7 @@ DATE_PAIRS = (("DATENAISSAR", "DATENAISSFR"), ("DATEDECLAAR", "DATEDECLAFR"),
 
 
 def record_of(text):
-    """The record the rules read from this text (no NER, no Groq) and its validation issues."""
+    """The record the rules read from this text (no NER, no translation) and its validation issues."""
     import converter
     import mapper
     import parser as record_parser
@@ -1194,7 +1194,7 @@ def record_of(text):
 
 
 def record_problems(text):
-    """(errors, Gregorian / Hijri mismatches) of the record the rules read from this text (no NER, no Groq)."""
+    """(errors, Gregorian / Hijri mismatches) of the record the rules read from this text (no NER, no translation)."""
     _, issues = record_of(text)
     errors = sum(1 for i in issues if i["level"] == "error")
     mismatches = sum(1 for i in issues if "do not match" in i["message"])

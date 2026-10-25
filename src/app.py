@@ -25,8 +25,8 @@ background, the browser shows a notification (the permission is asked at the fir
 
 The kraken device and models are chosen on the command line only (not in the page: a shared app must not let
 visitors point kraken at other files). The scans are personal documents: every file of a run (the upload in
-gradio's cache, the downloads) is deleted after KEEP_SECONDS. The online stages (French NER on Hugging Face,
-Groq translation) are off by default.
+gradio's cache, the downloads) is deleted after KEEP_SECONDS. Every stage runs on this
+computer (kraken, the NER models, the spelling and translation models through Ollama): nothing is sent online.
 """
 
 import argparse
@@ -563,7 +563,7 @@ def parse_text(doc, text, options):
     """Run the parsing chain on `text` and store the record, the report, the notes and the field lines."""
     stages = {}
     record, report, notes = run_pipeline(
-        text, use_ner=options["ner"], use_translation=options["groq"], use_french_ner=options["french_ner"],
+        text, use_ner=options["ner"], use_translation=options["translate"], use_french_ner=options["french_ner"],
         stages=stages,
     )
     doc.update(record=record, report=report, parser_notes=[f"[parser] {n}" for n in notes],
@@ -598,8 +598,8 @@ def write_files(doc, text):
                     "zip": str(folder / f"{stem}_madoc.zip")}
 
 
-def options_of(ner, french_ner, groq, spellcheck):
-    return {"ner": ner, "french_ner": french_ner, "groq": groq, "spellcheck": spellcheck}
+def options_of(ner, french_ner, translate, spellcheck):
+    return {"ner": ner, "french_ner": french_ner, "translate": translate, "spellcheck": spellcheck}
 
 
 def check_spelling(doc, options, progress=None):
@@ -700,7 +700,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 use_spellcheck = gr.Checkbox(True, label=I18N("opt_spellcheck"))
                 use_ner = gr.Checkbox(True, label=I18N("opt_ner"))
                 use_french_ner = gr.Checkbox(True, label=I18N("opt_french_ner"))
-                use_groq = gr.Checkbox(True, label=I18N("opt_groq"))
+                use_translate = gr.Checkbox(True, label=I18N("opt_translate"))
             with gr.Row():
                 threshold = gr.Slider(0.3, 0.99, value=0.8, step=0.01, label=I18N("opt_threshold"))
                 rerun = make(gr.Button, value=I18N("rerun"), size="sm")
@@ -777,15 +777,15 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                     gr.update(value=I18N("done") if view == "edit" else "E", variant="primary" if view == "edit" else "secondary"),
                     gr.update(variant="primary" if view == "spelling" else "secondary")]
 
-        option_inputs = [use_ner, use_french_ner, use_groq, use_spellcheck]
+        option_inputs = [use_ner, use_french_ner, use_translate, use_spellcheck]
         review_outputs = [spelling_view, spelling_details, spelling_state]
 
         # events -------------------------------------------------------------------------------------------
-        def on_upload(file, ner, french_ner, groq, spellcheck, limit, zoom, progress=gr.Progress()):
+        def on_upload(file, ner, french_ner, translate, spellcheck, limit, zoom, progress=gr.Progress()):
             if not file:
                 raise gr.Error("Choose a scan.")
             path = file if isinstance(file, str) else getattr(file, "name", str(file))
-            options = options_of(ner, french_ner, groq, spellcheck)
+            options = options_of(ner, french_ner, translate, spellcheck)
             doc, spelling = start_document(path, Path(path).name, options, limit, device, segmentation_model,
                                            recognition_model, progress)
             review = spelling_review(spelling)
@@ -795,10 +795,10 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         files_button.upload(on_upload, [files_button, *option_inputs, threshold, zoom_state],
                             [doc_state, *review_outputs, *panels, *modes]).then(None, None, None, js=notification_js())
 
-        def on_rerun(doc, ner, french_ner, groq, spellcheck, limit, zoom, progress=gr.Progress()):
+        def on_rerun(doc, ner, french_ner, translate, spellcheck, limit, zoom, progress=gr.Progress()):
             if not doc:
                 raise gr.Error("Import a scan first.")
-            options = options_of(ner, french_ner, groq, spellcheck)
+            options = options_of(ner, french_ner, translate, spellcheck)
             doc = dict(doc)
             spelling, text = check_spelling(doc, options, progress)
             doc.update(history=[text], position=0)
@@ -821,7 +821,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                                                     console_html(doc, limit)],
                           [doc_state, zoom_state, threshold], [segmentation_view, text_view, console])
 
-        def on_edit(doc, editing_text, view, ner, french_ner, groq, spellcheck, limit, zoom):
+        def on_edit(doc, editing_text, view, ner, french_ner, translate, spellcheck, limit, zoom):
             if not doc:
                 raise gr.Error("Import a scan first.")
             if view != "edit":   # start editing
@@ -830,7 +830,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             text = editing_text if editing_text.endswith("\n") else editing_text + "\n"
             if not text.strip():
                 raise gr.Error("The transcription is empty.")
-            doc = set_text(doc, text, options_of(ner, french_ner, groq, spellcheck), "c_edit")
+            doc = set_text(doc, text, options_of(ner, french_ner, translate, spellcheck), "c_edit")
             return [doc, gr.update(), *render(doc, zoom, limit), *mode("text")]
 
         edit_button.click(on_edit, [doc_state, text_edit, view_state, *option_inputs, threshold, zoom_state],
@@ -845,10 +845,10 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
 
         spelling_button.click(on_spelling_button, [doc_state, view_state, spelling_state], modes)
 
-        def on_history(doc, step, ner, french_ner, groq, spellcheck, limit, zoom):
+        def on_history(doc, step, ner, french_ner, translate, spellcheck, limit, zoom):
             if not doc:
                 raise gr.Error("Import a scan first.")
-            doc = move_in_history(doc, step, options_of(ner, french_ner, groq, spellcheck))
+            doc = move_in_history(doc, step, options_of(ner, french_ner, translate, spellcheck))
             return [doc, *render(doc, zoom, limit), *mode("text")]
 
         for button, step in ((undo, -1), (redo, 1)):
@@ -859,12 +859,12 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         back_to_rules.click(lambda state: set_all(state, True), [spelling_state], review_outputs)
         refuse_all.click(lambda state: set_all(state, False), [spelling_state], review_outputs)
 
-        def on_apply(doc, spelling, ner, french_ner, groq, spellcheck, limit, zoom):
+        def on_apply(doc, spelling, ner, french_ner, translate, spellcheck, limit, zoom):
             if not doc or not spelling["text"]:
                 raise gr.Error("No spelling check to apply.")
             text = apply_changes(spelling["text"], resolved(spelling), set(spelling["accepted"]))
             doc = dict(doc, spelling_notes=[n for n in spelling_notes(spelling).strip().split("\n") if n])
-            doc = set_text(doc, text, options_of(ner, french_ner, groq, spellcheck), "c_spelling")
+            doc = set_text(doc, text, options_of(ner, french_ner, translate, spellcheck), "c_spelling")
             return [doc, *render(doc, zoom, limit), *mode("text")]
 
         apply_spelling.click(on_apply, [doc_state, spelling_state, *option_inputs, threshold, zoom_state],

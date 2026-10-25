@@ -36,11 +36,11 @@ TEXT = {
                        "Correction orthographique (modèle local {model}, Ollama)",
                        "التصحيح الإملائي (نموذج محلي {model}، Ollama)"),
     "opt_ner": ("Arabic NER model (local)", "Modèle NER arabe (local)", "نموذج التعرف على الكيانات العربي (محلي)"),
-    "opt_french_ner": ("French NER model (online, Hugging Face)", "Modèle NER français (en ligne, Hugging Face)",
-                       "نموذج التعرف على الكيانات الفرنسي (عبر الإنترنت، Hugging Face)"),
-    "opt_groq": ("French names with Groq (online, needs GROQ_API_KEY)",
-                 "Noms en français avec Groq (en ligne, GROQ_API_KEY requise)",
-                 "الأسماء بالفرنسية عبر Groq (عبر الإنترنت، يتطلب GROQ_API_KEY)"),
+    "opt_french_ner": ("French NER model (local)", "Modèle NER français (local)",
+                       "نموذج التعرف على الكيانات الفرنسي (محلي)"),
+    "opt_translate": ("French names with the local model (Ollama)",
+                      "Noms en français avec le modèle local (Ollama)",
+                      "الأسماء بالفرنسية بالنموذج المحلي (Ollama)"),
     "opt_threshold": ("Confidence threshold (flag lines under)", "Seuil de confiance (lignes signalées en dessous)",
                       "عتبة الثقة (تُميَّز الأسطر الأدنى منها)"),
     "rerun": ("Run again with these options", "Relancer avec ces options", "إعادة المعالجة بهذه الخيارات"),
@@ -133,7 +133,7 @@ HELP = {
 7. **Save**: a zip with the scan, the segmentation, both transcriptions, the record and the report.
    Each **⤓** button downloads one of them.
 
-The French NER model and the Groq translation send data online: they are off by default (Options).
+Every model runs on this computer (NER, spelling and translation through Ollama): nothing is sent online.
 Files are deleted from the server after one hour. The language is chosen in Settings (bottom of the page);
 MaDoc can be installed as an application and notifies you when a long processing ends.
 """,
@@ -154,8 +154,8 @@ MaDoc can be installed as an application and notifies you when a long processing
 7. **Enregistrer** : un zip avec le scan, la segmentation, les deux transcriptions, l'enregistrement et le
    rapport. Chaque bouton **⤓** télécharge l'un d'eux.
 
-Le modèle NER français et la traduction Groq envoient des données en ligne : ils sont désactivés par défaut
-(Options). Les fichiers sont supprimés du serveur après une heure. La langue se choisit dans Paramètres (bas
+Tous les modèles tournent sur cet ordinateur (NER, orthographe et traduction avec Ollama) : rien n'est
+envoyé en ligne. Les fichiers sont supprimés du serveur après une heure. La langue se choisit dans Paramètres (bas
 de la page) ; MaDoc peut être installé comme application et vous prévient à la fin d'un long traitement.
 """,
     "ar": """
@@ -171,7 +171,7 @@ de la page) ; MaDoc peut être installé comme application et vous prévient à 
 6. **وحدة التحكم** (أسفل الصفحة): يجب تصحيح الأخطاء (بالأحمر) والتحقق من التنبيهات (بالبرتقالي).
 7. **حفظ**: ملف zip يضم الوثيقة والتجزئة والنصين والسجل والتقرير. كل زر **⤓** يحمّل واحدا منها.
 
-نموذج التعرف على الكيانات الفرنسي وترجمة Groq يرسلان البيانات عبر الإنترنت: هما متوقفان افتراضيا (الخيارات).
+كل النماذج تعمل على هذا الحاسوب (التعرف على الكيانات والإملاء والترجمة عبر Ollama): لا يرسل أي شيء عبر الإنترنت.
 تحذف الملفات من الخادم بعد ساعة. تُختار اللغة من الإعدادات (أسفل الصفحة)؛ يمكن تثبيت MaDoc كتطبيق
 وينبهك عند انتهاء معالجة طويلة.
 """,

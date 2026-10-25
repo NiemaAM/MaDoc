@@ -67,7 +67,7 @@ def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_di
                  stages=None):
     """raw text -> (record, validation report, notes). `ner` skips the models with a saved JSON.
 
-    use_french_ner=False runs only the Arabic NER model (the French one is an online Hugging Face Space).
+    use_french_ner=False runs only the Arabic NER model (both run on this computer, see classificator.py).
     stages: a dict that receives the output of every stage ("ner", "parsed", "converted", "mapped").
     """
     save_dir = Path(save_dir) if save_dir else None
@@ -96,7 +96,7 @@ def run_pipeline(raw_text, ner=None, use_ner=True, use_translation=True, save_di
     # 4. mapper: jobs, nationalities
     mapped = map_fields(converted)
     save("4_mapped.json", mapped)
-    # 5. translator: names and places (Groq)
+    # 5. translator: names and places (local model, Ollama)
     translated = translate(mapped) if use_translation else mapped
     save("5_translated.json", translated)
     # 6. validator: report
@@ -115,7 +115,7 @@ def main():
     parser.add_argument("--save-stages", type=Path, metavar="DIR", help="write the JSON of every stage in DIR")
     parser.add_argument("--ner", type=Path, help="use this classificator JSON instead of running the models")
     parser.add_argument("--no-ner", action="store_true", help="do not run the NER models (rules only)")
-    parser.add_argument("--no-translation", action="store_true", help="skip the Groq translation stage")
+    parser.add_argument("--no-translation", action="store_true", help="skip the translation stage (local model)")
     parser.add_argument("--image", type=Path, help="the scan of a .xml input, if it is not where the xml says")
     parser.add_argument("--segmentation-model", type=Path, default=MODEL_SEGMENTATION, help="kraken blla model")
     parser.add_argument("--recognition-model", type=Path, default=MODEL_RECOGNITION, help="kraken HTR model")

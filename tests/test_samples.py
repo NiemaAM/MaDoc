@@ -2,9 +2,9 @@
 
 Same idea as the old test (parse > convert > map > translate > validate), for the split pipeline:
 
-    parser > converter > mapper > translator (Groq, skipped offline) > validator
+    parser > converter > mapper > translator (local model, skipped without Ollama) > validator
 
-No model and no network is needed: the NER models are not loaded (rules only) and the Groq translation is
+No model and no network is needed: the NER models are not loaded (rules only) and the translation is
 replaced by "keep the Arabic", so the test is deterministic and fast, which is what a CI job needs.
 Every sample in samples/*.txt is checked, drop a new .txt there to add a case.
 
@@ -27,7 +27,7 @@ SAMPLES = sorted((ROOT / "samples").glob("*.txt"))
 
 
 def run_chain(text):
-    """raw text -> record, offline (no NER, no Groq)."""
+    """raw text -> record, offline (no NER, no translation)."""
     return mapper.map_fields(converter.convert(record_parser.parse(text, None)))
 
 
