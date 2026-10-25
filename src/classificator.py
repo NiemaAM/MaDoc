@@ -248,8 +248,30 @@ def classify_french_space(text):
     return french_ner
 
 
+_results = {}          # (text, use_arabic, use_french) -> result, the last few documents
+CACHE_SIZE = 16
+
+
 def classify(text, use_arabic=True, use_french=True):
-    """Run both models. A model that cannot be loaded is reported in "errors", not raised."""
+    """Run both models. A model that cannot be loaded is reported in "errors", not raised.
+
+    The result of a text is kept (CACHE_SIZE texts): the web interface parses the same text again after an
+    undo, a redo or a spelling choice, and the models are the slow part. A result with errors is not kept (the
+    model may be downloaded meanwhile)."""
+    import copy
+
+    key = (text, use_arabic, use_french)
+    if key in _results:
+        return copy.deepcopy(_results[key])
+    result = _classify(text, use_arabic, use_french)
+    if "errors" not in result:
+        if len(_results) >= CACHE_SIZE:
+            _results.pop(next(iter(_results)))
+        _results[key] = copy.deepcopy(result)
+    return result
+
+
+def _classify(text, use_arabic, use_french):
     result = {
         "models": {"ar": MODEL_AR, "fr": MODEL_FR},
         "arabic_ner": [],

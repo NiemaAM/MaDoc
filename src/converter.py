@@ -118,6 +118,7 @@ def phrase_to_number(phrase, number_keys):
             expanded.append(token)
     total = 0
     found = False
+    lost = False   # an unknown word right after "و": a misread number ("ألفين و ثلاثن" is not 2000)
     i = 0
     while i < len(expanded):
         token = expanded[i]
@@ -135,8 +136,10 @@ def phrase_to_number(phrase, number_keys):
                 i += n
                 break
         else:
+            if found and i > 0 and expanded[i - 1] == "و" and not token.isdigit():
+                lost = True
             i += 1
-    return total if found else None
+    return None if lost else (total if found else None)
 
 
 # dates builder for converter

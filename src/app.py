@@ -34,6 +34,7 @@ import base64
 import html
 import inspect
 import io
+import os
 import shutil
 import tempfile
 import time
@@ -157,15 +158,29 @@ def new_run_folder():
 
 
 def prepare_image(image_path, folder):
-    """The scan as kraken and the viewer must see it: turned upright (phone photos store the rotation in the
-    EXIF data, which kraken ignores) and in a mode kraken reads. Unchanged images are used as they are."""
+    """The scan as kraken and the viewer must see it, in the folder of the run: turned upright (phone photos
+    store the rotation in the EXIF data, which kraken ignores) and in a mode kraken reads; an unchanged image is
+    copied as it is. The run then no longer depends on gradio's copy of the upload (deleted after an hour)."""
     with Image.open(image_path) as image:
         rotated = image.getexif().get(0x0112, 1) not in (None, 1)   # 0x0112 = EXIF orientation
         if not rotated and image.mode in ("RGB", "L", "1"):
-            return str(image_path)
+            copied = Path(folder) / ("scan" + Path(image_path).suffix.lower())
+            shutil.copyfile(image_path, copied)
+            return str(copied)
         prepared = Path(folder) / "scan.png"
         ImageOps.exif_transpose(image).convert("RGB").save(prepared)
     return str(prepared)
+
+
+def keep_alive(doc):
+    """The run is in use: its folder is kept for KEEP_SECONDS more (new_run_folder deletes the folders not used
+    for that long). A folder already deleted (the page was left open longer) cannot be rebuilt: the person is
+    asked to import the scan again."""
+    folder = Path(doc["folder"])
+    if not folder.is_dir() or not Path(doc["image"]).is_file():
+        raise gr.Error("This scan was deleted from the server (files are kept one hour after their last use): "
+                       "import it again.")
+    os.utime(folder)
 
 
 def confidence_color(confidence, threshold):
@@ -437,7 +452,7 @@ def resolved(state):
 def isolate(text):
     """Arabic inside an English sentence, isolated (Unicode FSI ... PDI): without it the browser shows
     "صباخ → صباغ" in the wrong order around the arrow."""
-    return "⁨" + text + "⁩"
+    return "\u2068" + text + "\u2069"
 
 
 def spelling_review(state):
@@ -591,6 +606,7 @@ def parse_text(doc, text, options):
 
 def write_files(doc, text):
     """Every download of the run, and the zip of all of them (Save)."""
+    keep_alive(doc)
     folder = Path(doc["folder"])
     write_json(doc["record"], folder / "record.json")
     write_json(doc["report"], folder / "report.json")
@@ -606,7 +622,7 @@ def write_files(doc, text):
              "segmentation.xml", "segmentation.png"}
     stem = Path(doc.get("name") or "scan").stem
     with zipfile.ZipFile(folder / f"{stem}_madoc.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.write(image, "scan" + image.suffix.lower())
+        archive.write(image, image.name)
         for name in sorted(names):
             archive.write(folder / name, name)
     doc["files"] = {"image": str(image), "segmentation": str(folder / "segmentation.png"),
@@ -816,8 +832,13 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 raise gr.Error("Import a scan first.")
             options = options_of(ner, french_ner, translate, spellcheck)
             doc = dict(doc)
+            keep_alive(doc)
             spelling, text = check_spelling(doc, options, progress)
-            doc.update(history=[text], position=0)
+            # a new version in the history: the hand edits stay one ↶ away
+            history = doc["history"][:doc["position"] + 1]
+            if text != history[-1]:
+                history.append(text)
+            doc.update(history=history, position=len(history) - 1)
             parse_text(doc, text, options)
             return [doc, *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
 

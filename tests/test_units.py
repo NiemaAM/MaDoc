@@ -239,7 +239,7 @@ def translation_ollama(monkeypatch):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Fake)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
     monkeypatch.setattr(spelling_checker, "OLLAMA_URL", f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setattr(translator, "MODEL", "qwen2.5:7b")
     yield Fake
@@ -339,7 +339,10 @@ def test_app_prepare_image(tmp_path):
     from PIL import Image
     plain = tmp_path / "plain.jpg"
     Image.new("RGB", (40, 20)).save(plain)
-    assert app.prepare_image(plain, tmp_path) == str(plain)          # nothing to fix: used as it is
+    run = tmp_path / "run"
+    run.mkdir()
+    copied = app.prepare_image(plain, run)                             # nothing to fix: copied as it is
+    assert Path(copied).parent == run and Path(copied).read_bytes() == plain.read_bytes()
     rotated = tmp_path / "rotated.jpg"
     exif = Image.Exif()
     exif[0x0112] = 6                                                   # phone photo turned 90 degrees
@@ -620,3 +623,46 @@ def test_french_ner_drops_labels(monkeypatch):
                 for m in __import__("re").finditer(r"\S+", text)]
     monkeypatch.setattr(classificator, "get_french_pipeline", lambda: everything)
     assert [e["entity"] for e in classificator.classify_french(NER_TEXT)] == ["ZAKARIYA", "KABLI"]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# found in the review of the code
+# ---------------------------------------------------------------------------------------------------------
+def test_a_misread_number_word_is_not_ignored():
+    """"ألفين و ثلاثن" used to be read as 2000 (the unknown word skipped): a wrong date that looks valid."""
+    record = converter.convert(dict(common.TEMPLATE, DATENAISSFR="خامس و عشري دجنبر سنة ألفين و ثلاثن"))
+    assert not str(record["DATENAISSFR"]).startswith("2000")
+    record = converter.convert(dict(common.TEMPLATE, DATENAISSFR="خامس و عشري دجنبر سنة ألفين و ثلاثة"))
+    assert record["DATENAISSFR"] == "2003-12-25"
+
+
+def test_app_files_of_a_run_live_while_it_is_used(tmp_path, monkeypatch):
+    pytest.importorskip("gradio")
+    import app
+    from PIL import Image
+    monkeypatch.setattr(app, "RUNS_DIR", tmp_path / "runs")
+    folder = app.new_run_folder()
+    scan = tmp_path / "upload.jpg"
+    Image.new("RGB", (40, 20)).save(scan)
+    doc = {"folder": str(folder), "image": app.prepare_image(scan, folder)}
+    scan.unlink()                                                      # gradio deletes its copy of the upload
+    old = time.time() - 2 * app.KEEP_SECONDS
+    os.utime(folder, (old, old))
+    app.keep_alive(doc)                                                # used again: kept
+    other = app.new_run_folder()                                       # another run cleans the old folders
+    assert folder.is_dir() and other.is_dir()
+    os.utime(folder, (old, old))
+    app.new_run_folder()                                               # not used for too long: deleted
+    assert not folder.exists()
+    with pytest.raises(Exception, match="import it again"):
+        app.keep_alive(doc)
+
+
+def test_the_models_are_not_asked_twice_for_the_same_text(monkeypatch):
+    import classificator
+    calls = []
+    monkeypatch.setattr(classificator, "classify_arabic", lambda text: calls.append(text) or [])
+    monkeypatch.setattr(classificator, "classify_french", lambda text: [])
+    classificator.classify("نص")
+    classificator.classify("نص")
+    assert calls == ["نص"]

@@ -232,8 +232,27 @@ def answer_results(answer, count):
     return results if len(results) == count else None
 
 
+_answers = {}          # (model, items) -> translated values, the last few records
+CACHE_SIZE = 32
+
+
 # local model call (1 request)
 def translate_batch(items):
+    """translate_batch_uncached, with the answers of the last CACHE_SIZE requests kept: the web interface parses
+    the same record again after an undo / redo / edit elsewhere, and the model takes seconds. Only answers the
+    model really gave are kept (not the originals returned when it is unavailable)."""
+    key = (MODEL, json.dumps(items, ensure_ascii=False, sort_keys=True))
+    if key in _answers:
+        return list(_answers[key])
+    outputs = translate_batch_uncached(items)
+    if outputs != [item["text"] for item in items]:
+        if len(_answers) >= CACHE_SIZE:
+            _answers.pop(next(iter(_answers)))
+        _answers[key] = list(outputs)
+    return outputs
+
+
+def translate_batch_uncached(items):
     """Translate/transliterate Moroccan civil registry names, addresses,
     and employee information in one request to the local model."""
 

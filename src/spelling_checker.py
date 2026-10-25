@@ -202,11 +202,6 @@ def label_kind(word):
     return None
 
 
-def is_value_label(word):
-    """A label after which a value (name, place, address, job) is written."""
-    return label_kind(word) is not None
-
-
 def protected_positions(tokens, vocabulary=None, inside=None):
     """The words that are a value: after a value label, up to the next word of the form.
 
@@ -712,7 +707,7 @@ def apply_changes(text, changes, accepted=None):
     return "\n".join(lines)
 
 
-def merge_line(original, proposed, line_number, notes, vocabulary=None, protected=None):
+def merge_line(original, proposed, line_number, notes, vocabulary=None, protected=None):   # used by the tests
     """The original line with only the changes accepted by the rules applied (notes: every change)."""
     changes = line_changes(original, proposed, 0, vocabulary, protected)
     for change in changes:
@@ -1187,8 +1182,22 @@ def propose(text, model=None):
     # the certificate read as a whole: a Gregorian date the Hijri one contradicts, an address written twice
     changes.extend(date_flags(text, changes))
     changes.extend(address_flags(lines, changes))
-    changes = sorted(changes, key=lambda c: (c["line"], c["start"]))
-    return changes, notes
+    return without_overlaps(changes, notes), notes
+
+
+def without_overlaps(changes, notes):
+    """The changes sorted, two changes never on the same words: the review could not show both and applying
+    both would keep only one. The applied one wins, then a check / flag, then a refused proposal."""
+    rank = {id(c): (0 if c["accepted"] else 1 if c.get("check") or c.get("flag") else 2) for c in changes}
+    kept, taken = [], set()
+    for change in sorted(changes, key=lambda c: (rank[id(c)], c["line"], c["start"])):
+        span = {(change["line"], k) for k in range(change["start"], max(change["end"], change["start"] + 1))}
+        if span & taken:
+            notes.append("dropped (another change on these words): " + describe(change))
+            continue
+        taken |= span
+        kept.append(change)
+    return sorted(kept, key=lambda c: (c["line"], c["start"]))
 
 
 @lru_cache(maxsize=None)

@@ -101,7 +101,7 @@ class FakeOllama(BaseHTTPRequestHandler):
 @pytest.fixture
 def ollama(monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), FakeOllama)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     monkeypatch.setattr(sc, "OLLAMA_URL", f"http://127.0.0.1:{server.server_port}")
     FakeOllama.requests = []

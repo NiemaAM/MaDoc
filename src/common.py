@@ -12,6 +12,15 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
+try:
+    # .env (BIRTH_DICT_DIR, MADOC_SPELL_MODEL, HF_TOKEN ...) is read here, before any setting is: every stage
+    # imports common first, so the settings are the same whichever tool is started
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:   # python-dotenv is in both requirements files; without it the environment alone is used
+    pass
+
 # project root = the folder that contains src/ (this file is src/common.py)
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -272,15 +281,6 @@ def write_json(obj, path=None):
         print(text)
     else:
         Path(path).write_text(text + "\n", encoding="utf-8")
-
-
-def get_number_keys_source():
-    """Every written number alias of date_time.json ("numbers" and "time"), as in the file."""
-    aliases = []
-    for section in ("numbers", "time"):
-        for values in dates_data.get(section, {}).values():
-            aliases.extend(a for a in values if isinstance(a, str))
-    return aliases
 
 
 def kraken_command():
