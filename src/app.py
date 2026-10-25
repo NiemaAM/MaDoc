@@ -36,6 +36,7 @@ import inspect
 import io
 import os
 import shutil
+import sys
 import tempfile
 import time
 import zipfile
@@ -988,6 +989,18 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
     return app
 
 
+def logins(text):
+    """"ana:1234,sara:abcd" -> [("ana", "1234"), ("sara", "abcd")] (empty text: no login asked)."""
+    pairs = []
+    for item in (text or "").split(","):
+        user, _, password = item.strip().partition(":")
+        if user and password:
+            pairs.append((user, password))
+        elif item.strip():
+            raise SystemExit(f"--auth / MADOC_AUTH: {item.strip()!r} is not USER:PASSWORD")
+    return pairs
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gradio interface of the birth certificate pipeline.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -997,13 +1010,22 @@ def main():
     parser.add_argument("--segmentation-model", type=Path, default=MODEL_SEGMENTATION)
     parser.add_argument("--recognition-model", type=Path, default=MODEL_RECOGNITION)
     parser.add_argument("--no-pwa", action="store_true", help="do not offer MaDoc as an installable application")
+    parser.add_argument("--auth", metavar="USER:PASSWORD",
+                        help="ask for a login (several: a:1,b:2); also MADOC_AUTH in .env, which keeps the password "
+                             "out of the shell history")
     args = parser.parse_args()
+    auth = logins(args.auth or os.environ.get("MADOC_AUTH", ""))
+    if args.share and not auth:
+        print("Warning: --share without --auth: anyone with the link can use MaDoc (and the GPU). Only demo "
+              "documents: what is uploaded goes through gradio's relay server.", file=sys.stderr)
     # checked once at start: a GPU that torch cannot use falls back to the CPU with a warning
     app = build_app(resolve_device(args.device), args.segmentation_model, args.recognition_model)
     # i18n: English, French and Arabic (Settings at the bottom of the page); pwa: MaDoc can be installed as an
     # application, which shows a notification when a processing ends in the background
     launch = {"server_name": args.host, "server_port": args.port, "share": args.share, "i18n": I18N,
               "pwa": not args.no_pwa}
+    if auth:
+        launch.update(auth=auth, auth_message="MaDoc: log in with the name and password you were given.")
     allowed = inspect.signature(app.launch).parameters
     app.queue().launch(**{k: v for k, v in launch.items() if k in allowed})
 

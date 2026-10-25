@@ -122,10 +122,13 @@ All settings are environment variables. They can also be written in the `.env` f
 
 ## Using the web interface
 
+demo link: https://5ea85740026fceb334.gradio.live
+
 ```bash
 python src/app.py                                   # http://127.0.0.1:7860
 python src/app.py --device cuda:0
 python src/app.py --port 8080 --share               # public gradio.live link, see Data protection
+python src/app.py --share --auth demo:password     # the same, with a login (or MADOC_AUTH=demo:password in .env)
 python src/app.py --segmentation-model path/blla.mlmodel --recognition-model path/htr.mlmodel
 ```
 

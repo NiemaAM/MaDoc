@@ -709,3 +709,11 @@ def test_app_a_hand_edit_checks_the_spelling_again(tmp_path, monkeypatch):
     refused = next(c for c in spelling["changes"] if c["old"] == ["البيتت"])
     assert not refused["accepted"] and "refused" in refused["reason"]
     assert any(entry[1] == "c_respell" for entry in doc["log"])
+
+def test_app_logins():
+    pytest.importorskip("gradio")
+    import app
+    assert app.logins("") == [] and app.logins(None) == []
+    assert app.logins("ana:12:34, sara:abcd") == [("ana", "12:34"), ("sara", "abcd")]
+    with pytest.raises(SystemExit):
+        app.logins("ana")
