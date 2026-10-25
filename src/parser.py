@@ -474,7 +474,7 @@ def date_phrases(ents, flat):
 
 
 def split_lineage(text):
-    """'المصطفى قبلي بن صالح' -> ('المصطفى قبلي', 'بن صالح')."""
+    """'خالد الودغيري بن رضا' -> ('خالد الودغيري', 'بن رضا')."""
     tokens = text.split()
     for i, token in enumerate(tokens):
         if i > 0 and ar_key(token) in LINEAGE_WORDS:
@@ -619,7 +619,7 @@ def reconcile(parsed, candidates, notes):
             elif not rules_ok and not ner_ok:
                 notes.append(f"{field}: neither the rules ({value!r}) nor NER ({candidate!r}) give a valid date")
         else:
-            # the employee is written with his job ("لحسن شميطي موظف جماعي"): compare the name only
+            # the employee is written with his job ("فؤاد السعدي موظف جماعي"): compare the name only
             compared = EMPLOYEE_JOB.sub("", value) if field == "EMPLOYECREANT" else value
             if ar_key(compared) == ar_key(candidate):
                 continue

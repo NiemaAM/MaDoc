@@ -1029,8 +1029,8 @@ def name_candidates(arabic, latin, entry):
 
 def document_name(lines, span, arabic, latin):
     """(name, line) written elsewhere in the text that agrees with the Latin reading and differs from the Arabic
-    reading by one letter per word, plus one ("تفاص" / TIFAF: the father is "رشيد تفاف"; "لحيس" / LAHNICHE:
-    "لحنيش"), or None."""
+    reading by one letter per word, plus one ("الودعيري" / OUDGHIRI: the father is "خالد الودغيري"; "الإيريشي" /
+    IDRISSI: "الإدريسي"), or None."""
     size = len(arabic.split())
     target = unit_key(arabic.replace(" ", ""))
     found = set()
@@ -1076,15 +1076,18 @@ def name_changes(lines, model_changes, notes, model=None, use_model=True):
         if found:
             resolved[n] = found
             continue
-        # a first name of names.json one letter away that agrees with the Latin reading ("ببيل" / NABIL)
+        # a first name of names.json one letter away that agrees with the Latin reading ("إدريش" / IDRISS);
+        # not when the Arabic reading is itself a first name of names.json (then the Latin one is misread), and
+        # only names with consonants (a name of vowels, "آية", agrees with any Latin reading)
+        usable = len(arabic.split()) == 1 and ar_key(arabic) not in get_names()
         close = [w for w in close_entries(arabic, get_names()) if len(ar_key(w)) == len(ar_key(arabic))
-                 and names_agree(w, latin)] if len(arabic.split()) == 1 else []
+                 and arabic_skeleton(w) and names_agree(w, latin)] if usable else []
         if len(close) == 1:
             resolved[n] = (close[0], None)
             continue
         # two letters away: proposed in orange, never applied by the rules
-        close = [w for w in close_entries(arabic, get_names(), limit=2) if names_agree(w, latin)] \
-            if len(arabic.split()) == 1 else []
+        close = [w for w in close_entries(arabic, get_names(), limit=2)
+                 if arabic_skeleton(w) and names_agree(w, latin)] if usable else []
         if 1 <= len(close) <= 3:
             resolved[n] = (close, "check")
     unresolved = [n for n in range(len(disagreeing)) if n not in resolved]
@@ -1123,6 +1126,9 @@ def name_changes(lines, model_changes, notes, model=None, use_model=True):
             continue
         candidates = name_candidates(arabic, latin, entry)
         best = [c for c in candidates if c[0] == candidates[0][0]] if candidates else []
+        if len(best) > 1 and ar_key(arabic) in get_names():
+            # a tie, and the Arabic reading is a first name of names.json: the Latin one is the misreading
+            best = [c for c in best if c[1] == "latin"] or best
         if not best:
             told = f"; the model answered {entry}" if entry else ""
             notes.append(f"child's {kind}: the Arabic {arabic!r} and the Latin {latin!r} do not match, no "
@@ -1432,6 +1438,15 @@ def close_entries(word, entries, limit=1):
                    if abs(len(entry_key) - len(key)) <= limit and edit_distance(key, entry_key) <= limit})
 
 
+def with_article(entry, word):
+    """The dictionary's word written with the article as the word read has it ("العزير": "العزيز")."""
+    if word.startswith("ال") and not entry.startswith("ال"):
+        return "ال" + entry
+    if not word.startswith("ال") and entry.startswith("ال") and len(entry) > 4:
+        return entry[2:]
+    return entry
+
+
 def value_word_suggestions(lines, protected_by_line, changes):
     """A misread word inside a name or a place gets the dictionary's word one letter away:
 
@@ -1467,7 +1482,7 @@ def value_word_suggestions(lines, protected_by_line, changes):
             if len(address) == 1 and len(word) >= 4:
                 new, source, accepted = address[0], "address", True
             elif len(written.get(unit_key(word), [])) > 1:
-                continue   # a name or place read the same way twice ("عتيقة ممير" ... "عتيقة ممير"): kept
+                continue   # a name or place read the same way twice ("لبنى الغزواني" ... "لبنى الغزواني"): kept
             elif kind == "place" or (kind == "name" and len(word) >= 4):
                 entries, source = (places, "cities.json") if kind == "place" else (names, "names.json")
                 close = [w for w in close_entries(word, entries) if unit_key(w) != unit_key(word)]
@@ -1483,6 +1498,8 @@ def value_word_suggestions(lines, protected_by_line, changes):
                     close = [w for w in close if get_regions().get(ar_key(w)) in regions or written.get(unit_key(w))]
                 close.sort(key=lambda w: (not written.get(unit_key(w)),
                                           get_regions().get(ar_key(w)) not in regions, w))
+                # the article as read: "العزير" -> "العزيز", not "عزيز" (names.json has the bare name)
+                close = list(dict.fromkeys(with_article(w, word) for w in close))
                 if 1 <= len(close) <= 3:
                     new, options = close[0], close
             if not new or unit_key(new) == unit_key(word):
@@ -1526,13 +1543,13 @@ def name_after(units, k):
             break
         out.append(j)
         if units[j]["trail"].strip() or len(out) == 3:
-            break   # "رشيد تفاف (والده)": the name ends at the punctuation
+            break   # "نبيل الإدريسي (والده)": the name ends at the punctuation
     return out
 
 
 def declarant_names(lines, changes):
-    """"صرحت به السيدة نعيمة السكتاني (والدتها)": the declarant is the mother, whose name is also written in
-    the header ("و والدتها بهمة السكتاني"). A word that differs between the two readings is the same word: the
+    """"صرحت به السيدة غزلان الزروالي (والدتها)": the declarant is the mother, whose name is also written in
+    the header ("و والدتها عرلاب الزروالي" as read). A word that differs between the two readings is the same word: the
     reading that is a first name of names.json is proposed for the other one (applied when two letters at most
     differ); when neither is known, both are flagged."""
     names = get_names()
@@ -1572,7 +1589,7 @@ def declarant_names(lines, changes):
             continue
         known_a, known_b = ar_key(a) in names, ar_key(b) in names
         if latin_family and names_agree(a, latin_family) != names_agree(b, latin_family):
-            # "لحنيش" / "لحنيسن": the child's NOM LAHNICHE agrees with one reading only
+            # "الإدريسي" / "الإدريسن": the child's NOM IDRISSI agrees with one reading only
             known_a, known_b = names_agree(a, latin_family), names_agree(b, latin_family)
             why = f"it agrees with the child's {latin_family}"
         else:
@@ -1962,7 +1979,7 @@ def glued_labels(lines, changes):
 
 
 def glued_lineage(lines, changes):
-    """"و والدتها مليكة كنوبست الكبير": "بنت" glued to the family name ("كنو" + "بست"). Only on the mother's line
+    """"و والدته نادية العمرانيبست رضا": "بنت" glued to the family name ("العمراني" + "بست"). Only on the mother's line
     (after "والدته" / "والدتها") when it has no "بنت": the form always writes the mother's lineage. Applied."""
     out = []
     for line_index, line in enumerate(lines):
@@ -2032,6 +2049,22 @@ def day_gaps(text):
         except ValueError:
             continue
     return gaps
+
+
+@lru_cache(maxsize=None)
+def alias_ranks():
+    """Every number / month word of date_time.json -> its place among the spellings of its value (0: the usual
+    one, written first in the file: "خمسة" before "خمسا")."""
+    ranks = {}
+    for section in ("numbers", "hijri_months", "miladi_months"):
+        for aliases in dates_data.get(section, {}).values():
+            for rank, alias in enumerate(aliases if isinstance(aliases, list) else []):
+                ranks.setdefault(surface(str(alias)), rank)
+    return ranks
+
+
+def alias_rank(words):
+    return alias_ranks().get(surface(words), 99)
 
 
 def record_dates(text):
@@ -2122,7 +2155,8 @@ def date_fixes(text, changes):
                 old = "".join(map(unit_key, changes[i]["old"]))
                 # a misread letter before a lost one ("ثلاثن": "ثلاثة", not "ثلاث")
                 good = [min(good, key=lambda e: (edit_distance(old, "".join(map(unit_key, e[0]))),
-                                                 abs(len(old) - len("".join(map(unit_key, e[0])))), e[0]))]
+                                                 abs(len(old) - len("".join(map(unit_key, e[0])))),
+                                                 alias_rank(" ".join(e[0])), e[0]))]
         if len(good) > 1:
             # only the date pairs the options change are compared (another pair may be off for its own reasons)
             per_option = [day_gaps(trial) for _, trial, _, _ in good]

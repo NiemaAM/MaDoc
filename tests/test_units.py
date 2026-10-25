@@ -20,6 +20,9 @@ import recognition
 import segmentation
 import translator
 from common import read_text_file
+from documents import APP_TEXT, NATIONALITY_DOCUMENT
+
+JOB = "موظف بالصناعة التقليدية"   # the father's job in APP_TEXT (samples/2.txt)
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = "رسم ولادة رقم 01\nفي يوم ثالث و عشري شوال\n"
@@ -187,13 +190,13 @@ def test_translator_messages_never_go_to_stdout(monkeypatch, capsys):
     """stdout carries the JSON record: python src/pipeline.py x.txt > record.json must stay valid JSON."""
     import spelling_checker
     monkeypatch.setattr(spelling_checker, "OLLAMA_URL", "http://127.0.0.1:9")    # nothing listens there
-    record = dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي", PROFESSIONPERE="حداد التقليدي")
+    record = dict(common.TEMPLATE, PRENOMPEREAR="خالد الغزواني", PROFESSIONPERE="حداد التقليدي")
     out = translator.translate(record)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Translation model unavailable" in captured.err
     assert out["PROFESSIONPEREFR"] == ""          # an untranslated job stays empty, never Arabic
-    assert out["PRENOMPEREFR"] == "محمد افوضي"    # kept whole (never half Latin), reported by the validator
+    assert out["PRENOMPEREFR"] == "خالد الغزواني"  # kept whole (never half Latin), reported by the validator
 
 
 def test_translator_refuses_a_remote_ollama(monkeypatch):
@@ -214,7 +217,7 @@ def translation_ollama(monkeypatch):
     import spelling_checker
 
     class Fake(BaseHTTPRequestHandler):
-        answer = {"name_part": "Afoudi", "address": "Khouribga", "job": "forgeron"}
+        answer = {"name_part": "Ghazouani", "address": "Khouribga", "job": "forgeron"}
         models = [{"name": "qwen2.5:7b", "model": "qwen2.5:7b"}]
         requests = []
 
@@ -248,9 +251,9 @@ def translation_ollama(monkeypatch):
 
 
 def test_translator_local_model(translation_ollama):
-    record = dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي", PROFESSIONPERE="حداد التقليدي", LIEUNAISS="خريبكة")
+    record = dict(common.TEMPLATE, PRENOMPEREAR="خالد الغزواني", PROFESSIONPERE="حداد التقليدي", LIEUNAISS="خريبكة")
     out = translator.translate(record)
-    assert out["PRENOMPEREFR"] == "Mohamed Afoudi"         # Mohamed from names.json, Afoudi from the model
+    assert out["PRENOMPEREFR"] == "Khalid Ghazouani"       # Khalid from names.json, Ghazouani from the model
     assert out["PROFESSIONPEREFR"] == "FORGERON"           # post-processed like jobs.json
     assert out["LIEUNAISSFR"] == "Khouribga"
     body = translation_ollama.requests[0]
@@ -260,33 +263,35 @@ def test_translator_local_model(translation_ollama):
 
 def test_translator_model_not_pulled(translation_ollama, capsys):
     translation_ollama.models = [{"name": "llama3:8b", "model": "llama3:8b"}]
-    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="افوضي"))
-    assert out["PRENOMPEREFR"] == "افوضي"
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="الغزواني"))
+    assert out["PRENOMPEREFR"] == "الغزواني"
     assert "ollama pull qwen2.5:7b" in capsys.readouterr().err
     assert translation_ollama.requests == []
 
 
 def test_translator_rejects_arabic_answers(translation_ollama):
-    translation_ollama.answer = dict(translation_ollama.answer, name_part="افوضي")
-    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="محمد افوضي"))
-    assert out["PRENOMPEREFR"] == "محمد افوضي"              # the original, never the model's Arabic
+    translation_ollama.answer = dict(translation_ollama.answer, name_part="الغزواني")
+    out = translator.translate(dict(common.TEMPLATE, PRENOMPEREAR="خالد الغزواني"))
+    assert out["PRENOMPEREFR"] == "خالد الغزواني"            # the original, never the model's Arabic
 
 
-def test_translator_your_record(translation_ollama):
-    """The record where qwen2.5:7b wrote Azzouz, Zouhair, "Fille de Fille d'Adil", "hospital", two titles."""
-    translation_ollama.answer = {"name_part": "Fille d'Afoudi", "job": "x",
+def test_translator_a_sample_record(translation_ollama):
+    """The record of samples/5.txt: what a 7B model got wrong ("Fille de Fille d'...", another first name, an
+    English word, the officer's title twice) is written by the code."""
+    from documents import sample
+    import spelling_checker
+    translation_ollama.answer = {"name_part": "Fille d'Saadi", "job": "x",
                                  "address": "Boulevard de l'Hôpital, Khouribga"}
-    record = dict(common.TEMPLATE, NOMAR="اقلي", NOM="IQLI", PRENOMPEREAR="عزيز اقلي", NOMPEREAR="بن محمد",
-                  PRENOMMEREAR="زهرة افوضي", NOMMEREAR="بنت ادريس", EMPLOYECREANT="لحسن شميطي موظف جماعي",
-                  LIEUNAISS="محج المستشفى مدينة خريبڭة")
+    record, _ = spelling_checker.record_of(sample(5).replace("ولد ب جماعة خريبڭة الحضرية اقليم خريبڭة.",
+                                                             "ولد ب محج المستشفى مدينة خريبڭة."))
     out = translator.translate(record)
-    assert out["PRENOMPEREFR"] == "Aziz Iqli"              # names.json + the child's family name
-    assert out["NOMPEREFR"] == "Fils de Mohamed"
-    assert out["PRENOMMEREFR"] == "Zahra Afoudi"
-    assert out["NOMMEREFR"] == "Fille de Driss"            # no model at all: lineage + names.json
-    assert out["EMPLOYECREANTFR"] == "Lahcen Afoudi " + common.EMPLOYEE_TITLE
+    assert out["PRENOMPEREFR"] == "Khalid Oudghiri"        # names.json + the child's family name
+    assert out["NOMPEREFR"] == "Fils de Rida"
+    assert out["PRENOMMEREFR"] == "Loubna Saadi"
+    assert out["NOMMEREFR"] == "Fille de Khalid"           # no model at all: lineage + names.json
+    assert out["EMPLOYECREANTFR"] == "Fouad Saadi " + common.EMPLOYEE_TITLE
     asked = json.loads(translation_ollama.requests[0]["messages"][1]["content"])["items"]
-    assert [i["text"] for i in asked if i["type"] == "name_part"] == ["افوضي", "شميطي"]
+    assert [i["text"] for i in asked if i["type"] == "name_part"] == ["الغزواني", "السعدي"]
     address = next(i for i in asked if i["type"] == "address")
     assert address["glossary"]["المستشفى"] == "Hôpital" and address["glossary"]["محج"] == "Boulevard"
 
@@ -295,12 +300,12 @@ def test_translator_cleans_the_model_extras():
     part = {"type": "name_part", "text": "ادريس"}
     assert translator.postprocess_output(part, "Fille d'Idriss") == "Idriss"
     assert translator.postprocess_output(part, "fils de ben idriss.") == "Idriss"
-    employee = {"type": "employee", "text": "لحسن شميطي"}
-    assert translator.postprocess_output(employee, "Lahcen Chmiati FONCTIONNAIRE ET OFFICIER DU STATUT CIVIL") \
-        == "Lahcen Chmiati " + common.EMPLOYEE_TITLE
-    assert translator.split_lineage("بنت ادريس") == ("Fille de", "ادريس")
-    assert translator.name_segments("عبد الرحيم افوضي", translator.get_names_lookup()) == \
-        [("عبد الرحيم", "Abderrahim"), ("افوضي", None)]
+    employee = {"type": "employee", "text": "فؤاد السعدي"}
+    assert translator.postprocess_output(employee, "Fouad Saadi FONCTIONNAIRE ET OFFICIER DU STATUT CIVIL") \
+        == "Fouad Saadi " + common.EMPLOYEE_TITLE
+    assert translator.split_lineage("بنت خالد") == ("Fille de", "خالد")
+    assert translator.name_segments("عبد الرحيم الغزواني", translator.get_names_lookup()) == \
+        [("عبد الرحيم", "Abderrahim"), ("الغزواني", None)]
 
 
 def test_answer_results():
@@ -316,8 +321,8 @@ def test_translator_postprocess():
     assert translator.postprocess_output(item, "Ben Salah") == "Fils de Salah"
     item = {"type": "job", "text": "حداد"}
     assert translator.postprocess_output(item, " forgeron. ") == "FORGERON"
-    item = {"type": "employee", "text": "لحسن شميطي"}
-    assert translator.postprocess_output(item, "Lahcen Chmiti").endswith(common.EMPLOYEE_TITLE)
+    item = {"type": "employee", "text": "فؤاد السعدي"}
+    assert translator.postprocess_output(item, "Fouad Saadi").endswith(common.EMPLOYEE_TITLE)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -357,18 +362,6 @@ def test_app_prepare_image(tmp_path):
         assert image.mode == "RGB"
 
 
-APP_TEXT = (
-    "رسم ولادة رقم: 42\n"
-    "في يوم ثالث شوال عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق ثامن عشر دجنبر سنة الفين و ثلاثة ميلادية.\n"
-    "PRENOM BILAL\n"
-    "الإسم الشخصي : بلال\n"
-    "ذكر\n"
-    "من والده عبد الجبار قاسم بن محمد\n"
-    "حرفته : فلاح\n"
-    "و والدته عتيقة ممير بنت عبد العزيز.\n"
-    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
-)
 
 
 def app_document(tmp_path, text=APP_TEXT):
@@ -376,7 +369,7 @@ def app_document(tmp_path, text=APP_TEXT):
     import app
     from PIL import Image
     scan = tmp_path / "scan.png"
-    Image.new("RGB", (400, 30 * 12), "white").save(scan)
+    Image.new("RGB", (400, 30 * text.count("\n") + 30), "white").save(scan)
     lines = [{"text": t, "confidence": 0.5 if i == 4 else 0.95, "polygon": [[0, 30 * i], [400, 30 * i], [400, 30 * i + 25]],
               "baseline": []} for i, t in enumerate(text.rstrip("\n").split("\n"))]
     doc = {"folder": str(tmp_path), "image": str(scan), "name": "scan.png", "xml": "<PcGts/>", "lines": lines,
@@ -395,12 +388,12 @@ def test_app_panels_link_every_line(tmp_path):
     table = app.record_html(doc)
     assert 'class="md-poly ln-5"' in segmentation and 'md-line ln-5 low' in text      # line 5: 50 %
     assert "body:has(.ln-5:hover) .ln-5" in text
-    # the father's job is read on line 8, the child's first name on lines 4 (Latin) and 5 (Arabic)
-    assert doc["field_lines"]["PROFESSIONPERE"] == [7] and set(doc["field_lines"]["PRENOMAR"]) == {4}
+    # the father's job is read on line 19, the child's first name on lines 8 (Arabic) and 9 (Latin)
+    assert doc["field_lines"]["PROFESSIONPERE"] == [18] and set(doc["field_lines"]["PRENOMAR"]) == {7}
     row = next(r for r in table.split("<tr") if "PROFESSIONPERE" in r)
-    assert "ln-8" in row
+    assert "ln-19" in row
     row = next(r for r in table.split("<tr") if "PRENOMAR" in r)
-    assert "ln-4" in row and "ln-5" in row
+    assert "ln-8" in row and "ln-9" in row
 
 
 def test_app_console(tmp_path):
@@ -417,10 +410,10 @@ def test_app_history_and_files(tmp_path):
     import app
     import zipfile
     doc, options = app_document(tmp_path)
-    edited = app.set_text(doc, APP_TEXT.replace("فلاح", "نجار"), options, "[edit] test")
+    edited = app.set_text(doc, APP_TEXT.replace(JOB, "نجار", 1), options, "[edit] test")
     assert edited["record"]["PROFESSIONPERE"] == "نجار" and len(edited["history"]) == 2
     back = app.move_in_history(edited, -1, options)
-    assert back["record"]["PROFESSIONPERE"] == "فلاح"
+    assert back["record"]["PROFESSIONPERE"] == JOB
     assert app.move_in_history(back, -1, options) is back               # nothing before the first version
     again = app.move_in_history(back, 1, options)
     assert again["record"]["PROFESSIONPERE"] == "نجار"
@@ -459,18 +452,6 @@ def test_app_builds():
 # ---------------------------------------------------------------------------------------------------------
 # parser: nationalities
 # ---------------------------------------------------------------------------------------------------------
-NATIONALITY_DOCUMENT = (
-    "في يوم ثالث شوال\n"
-    "الإسم الشخصي : بلال\n"
-    "ذكر\n"
-    "{child}"
-    "من والده عبد الجبار قاسم بن محمد\n"
-    "{father}"
-    "و والدته عتيقة ممير بنت عبد العزيز.\n"
-    "المولودة ب جماعة خريبڭة الحضرية.\n"
-    "{mother}"
-    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
-)
 
 
 def nationalities(child="", father="جنسيته : مغربية.\n", mother="جنسيتها : مغربية\n"):
@@ -549,7 +530,7 @@ def test_app_console_in_three_languages(tmp_path):
 # ---------------------------------------------------------------------------------------------------------
 import classificator  # noqa: E402
 
-NER_TEXT = "في يوم ثالث\nالاسم الشخصي زكرياء\nPRENOM ZAKARIYA\nNOM KABLI\nمن والده\n"
+NER_TEXT = APP_TEXT     # samples/2.txt: two Latin lines, "PRENOM AYOUB" and "NOM SBAI"
 
 
 def fake_ner(text):
@@ -560,7 +541,7 @@ def fake_ner(text):
 
 def test_latin_lines_offsets():
     lines = classificator.latin_lines(NER_TEXT)
-    assert [line for _, line in lines] == ["PRENOM ZAKARIYA", "NOM KABLI"]
+    assert [line for _, line in lines] == ["PRENOM AYOUB", "NOM SBAI"]
     for offset, line in lines:
         assert NER_TEXT[offset:offset + len(line)] == line
 
@@ -570,8 +551,8 @@ def test_french_ner_local(monkeypatch):
     monkeypatch.setattr(classificator, "get_french_pipeline", lambda: lambda t: seen.append(t) or fake_ner(t))
     monkeypatch.setattr(classificator, "classify_french_space", lambda t: pytest.fail("Space called"))
     found = classificator.classify_french(NER_TEXT)
-    assert seen == ["PRENOM ZAKARIYA", "NOM KABLI"]          # the Arabic lines are never given to it
-    assert [e["entity"] for e in found] == ["ZAKARIYA", "KABLI"]
+    assert seen == ["PRENOM AYOUB", "NOM SBAI"]          # the Arabic lines are never given to it
+    assert [e["entity"] for e in found] == ["AYOUB", "SBAI"]
     for e in found:                                          # offsets in the whole text, for the parser zones
         assert NER_TEXT[e["start"]:e["end"]] == e["entity"]
 
@@ -613,7 +594,7 @@ def test_french_ner_needs_a_sentence(monkeypatch):
 
     monkeypatch.setattr(classificator, "get_french_pipeline", lambda: sentence_only)
     found = classificator.classify_french(NER_TEXT)
-    assert [e["entity"] for e in found] == ["ZAKARIYA", "KABLI"]
+    assert [e["entity"] for e in found] == ["AYOUB", "SBAI"]
     for e in found:
         assert NER_TEXT[e["start"]:e["end"]] == e["entity"]
 
@@ -623,7 +604,7 @@ def test_french_ner_drops_labels(monkeypatch):
         return [{"word": m.group(), "entity_group": "PER", "start": m.start(), "end": m.end(), "score": 0.5}
                 for m in __import__("re").finditer(r"\S+", text)]
     monkeypatch.setattr(classificator, "get_french_pipeline", lambda: everything)
-    assert [e["entity"] for e in classificator.classify_french(NER_TEXT)] == ["ZAKARIYA", "KABLI"]
+    assert [e["entity"] for e in classificator.classify_french(NER_TEXT)] == ["AYOUB", "SBAI"]
 
 
 # ---------------------------------------------------------------------------------------------------------

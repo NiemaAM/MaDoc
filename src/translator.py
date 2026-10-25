@@ -104,7 +104,8 @@ def get_names_lookup():
 
 
 def name_segments(text, known):
-    """'عزيز اقلي' -> [('عزيز', 'Aziz'), ('اقلي', None)]: known words (one to three) and runs of unknown ones."""
+    """'خالد الغزواني' -> [('خالد', 'Khalid'), ('الغزواني', None)]: known words (one to three) and runs of
+    unknown ones."""
     words = text.split()
     keys = [ar_key(word) for word in words]
     segments, i = [], 0

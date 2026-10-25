@@ -14,6 +14,8 @@ import pytest
 
 import spelling_checker as sc
 from common import read_text_file
+from documents import (COHERENCE_DOCUMENT, DATE_DOCUMENT, DECLARANT_DOCUMENT, DECLARANT_TWO_LINES,
+                       EMPTY_MINUTE_DOCUMENT, FATHER_DECLARANT_DOCUMENT, NAME_DOCUMENT, sample)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -265,10 +267,10 @@ def test_values_are_protected():
 
 
 def test_protection_crosses_lines_and_misspelt_labels():
-    """'من والد' + 'ها حسن هنور' on two lines, a misspelt label: the name is still protected."""
+    """'من والد' + 'ها ياسين السباعي' on two lines, a misspelt label: the name is still protected."""
     protected, inside = sc.protected_positions("من والد".split())
     assert inside
-    protected, _ = sc.protected_positions("ها حسن هنور بن العربي".split(), inside=inside)
+    protected, _ = sc.protected_positions("ها ياسين السباعي بن رضا".split(), inside=inside)
     assert {0, 1, 2, 4} <= set(protected)
     assert set(sc.protected_positions("الاسم الشحصي وليد".split())[0]) == {2}
 
@@ -447,7 +449,7 @@ def test_a_misread_job_gets_the_jobs_of_the_dictionary():
 
 
 def test_job_suggestions_without_and_with_the_model(ollama):
-    text = "و والدتها نادية بنت ناصر.\nحرفته صباخ\nجنسيتها : مغربية\n"
+    text = "و والدتها نادية العمراني بنت رضا.\nحرفته صباخ\nجنسيتها : مغربية\n"
     ollama.answer = lambda lines: lines                      # the model proposes nothing
     changes, _ = sc.propose(text)
     job = next(c for c in changes if c.get("source") == "jobs.json")
@@ -461,11 +463,11 @@ def test_job_suggestions_without_and_with_the_model(ollama):
 
 
 def test_a_single_possible_job_is_applied(ollama):
-    text = "و والدتها نادية بنت ناصر.\nحرفته : فلاحح\n"
+    text = "و والدتها نادية العمراني بنت رضا.\nحرفته : فلاحح\n"
     ollama.answer = lambda lines: lines
     changes, _ = sc.propose(text)
     assert [(c["old"], c["new"], c["accepted"]) for c in changes] == [(["فلاحح"], ["فلاح"], True)]
-    assert sc.apply_changes(text, changes) == "و والدتها نادية بنت ناصر.\nحرفته : فلاح\n"
+    assert sc.apply_changes(text, changes) == "و والدتها نادية العمراني بنت رضا.\nحرفته : فلاح\n"
 
 
 def test_jobs_without_ollama(monkeypatch):
@@ -502,14 +504,15 @@ def test_app_cycles_through_the_jobs(ollama):
 # context: the declarant's job is the parent's job, written a second time
 # ---------------------------------------------------------------------------------------------------------
 def job_document(father_job, declarant_job, relation="والدها"):
+    """The parents' lines of samples/2.txt, with the father's job written twice (header, declaration)."""
     return (
-        "من والدها: عمر قبلي بن صالح\n"
-        "و والدتها نادية ايت احريس بنت ناصر.\n"
+        "من والدها: ياسين السباعي بن رضا\n"
+        "و والدتها زينب الحجوجي بنت نبيل.\n"
         f"حرفته {father_job}\n"
         "جنسيتها : مغربية\n"
         "حرفتها : ربة البيت\n"
-        f"بناءا على ما صرح به السيد عمر قبلي ({relation}) تحت عدد : 18 عمره ثمانية و ستون سنة\n"
-        f"حرفته {declarant_job} جنسيته مغربية الساكن بحي القدس الأول\n"
+        f"بناءا على ما صرح به السيد ياسين السباعي ({relation}) تحت عدد : 24 عمره تسعة و أربعون سنة\n"
+        f"حرفته {declarant_job} جنسيته مغربية الساكن بحي الأمل\n"
     )
 
 
@@ -564,23 +567,6 @@ def test_a_far_model_guess_is_not_a_job_proposal(ollama):
 # ---------------------------------------------------------------------------------------------------------
 # numbers judged by the whole record; no bias towards an example of the instructions
 # ---------------------------------------------------------------------------------------------------------
-DATE_DOCUMENT = (
-    "رسم ولادة رقم: 42\n"
-    "في يوم ثالث و عشري ذو الحجة\n"
-    "عام : ألف و أربعمائة و ثمانية و عشرين هجرية\n"
-    "موافق ثالث يناير سنة ألفين و ثمانين ميلادية.\n"
-    "على الساعة: الخامسة عشرة\n"
-    "الإسم الشخصي : بلال\n"
-    "ذكر\n"
-    "من والده عبد الجبار قاسم بن محمد\n"
-    "حرفته : مستخدم\n"
-    "و والدته عتيقة ممير بنت عبد العزيز.\n"
-    "الساكنان بحي الأمل الرقم: 494 خريبڭة.\n"
-    "بناءا على ما صرحت به السيدة عتيقة ممير (والدته) تحت عدد : 38\n"
-    "وحرر في تاسع محرم عام ألف و أربعمائة و تسعة و عشرين هجرية\n"
-    "موافق ثامن عشر يناير سنة ألفين و ثمانين ميلادية.\n"
-    "من طرفنا نحن عبد الرحيم ڭلفاع موظف جماعي\n"
-)
 
 
 def test_a_misread_year_is_corrected_by_the_context(ollama):
@@ -595,7 +581,7 @@ def test_a_misread_year_is_corrected_by_the_context(ollama):
 
 def test_a_number_change_that_fixes_nothing_stays_refused(ollama):
     """'عشري' -> 'عشرين' changes no error: a correct number word is kept."""
-    ollama.answer = lambda lines: [l.replace("ثالث و عشري", "ثالث و عشرين") for l in lines]
+    ollama.answer = lambda lines: [l.replace("سادس و عشري", "سادس و عشرين") for l in lines]
     changes, notes = sc.propose(DATE_DOCUMENT)
     # refused, and not even shown: a correct word changed for nothing is noise, it goes to the notes
     assert any("ignored" in n and "عشري" in n for n in notes)
@@ -611,10 +597,10 @@ def test_a_number_change_that_breaks_a_date_is_refused(ollama):
 
 
 def test_a_right_job_gets_no_proposal(ollama):
-    """'مستخدم' is a job of jobs.json: the model's 'صباغ' is not even shown."""
-    ollama.answer = lambda lines: [l.replace("مستخدم", "صباغ") for l in lines]
+    """'تقني' is a job of jobs.json: the model's 'صباغ' is not even shown."""
+    ollama.answer = lambda lines: [l.replace("تقني", "صباغ") for l in lines]
     changes, _ = sc.propose(DATE_DOCUMENT)
-    assert not [c for c in changes if c["old"] == ["مستخدم"]]
+    assert not [c for c in changes if c["old"] == ["تقني"]]
 
 
 def test_the_instructions_have_no_job_example():
@@ -655,53 +641,44 @@ def test_every_sample_name_agrees():
 
 @pytest.fixture
 def no_names_json(monkeypatch):
-    """The name tests below check the model's path: names.json (which knows بلال) is left out."""
+    """The name tests below check the model's path: names.json (which knows أيوب) is left out."""
     monkeypatch.setattr(sc, "get_names", lambda: {})
 
 
-NAME_DOCUMENT = (
-    "في يوم ثالث و عشري ذو الحجة\n"
-    "PRENOM BILAL\n"
-    "NOM KACIM\n"
-    "الإسم الشخصي : ملال\n"
-    "ذكر\n"
-    "الإسم العائلي قاسم\n"
-    "من والده عبد الجبار قاسم بن محمد\n"
-)
 
 
 def test_a_misread_arabic_name_gets_a_proposal(ollama, no_names_json):
-    """'ملال' / 'BILAL': the Arabic of BILAL is 'بلال' (1 letter), the Latin of ملال 'MALAL' (2 letters):
+    """'أيرب' / 'AYOUB': the Arabic of AYOUB is 'أيوب' (1 letter), the Latin of أيرب 'AYRAB' (2 letters):
     the Arabic gets the proposal, not applied (names are decided by a person)."""
     ollama.answer = lambda lines: lines
-    ollama.names_answer = lambda names: [{"arabic_of_latin": "بلال", "latin_of_arabic": "MALAL"}]
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "أيوب", "latin_of_arabic": "AYRAB"}]
     changes, _ = sc.propose(NAME_DOCUMENT)
     [change] = [c for c in changes if c.get("source") == "names"]
-    assert (change["old"], change["new"], change["accepted"]) == (["ملال"], ["بلال"], False)
-    assert "BILAL" in sc.describe(change)
-    assert sc.apply_changes(NAME_DOCUMENT, changes, {changes.index(change)}).count("الإسم الشخصي : بلال") == 1
+    assert (change["old"], change["new"], change["accepted"]) == (["أيرب"], ["أيوب"], False)
+    assert "AYOUB" in sc.describe(change)
+    assert sc.apply_changes(NAME_DOCUMENT, changes, {changes.index(change)}).count("الإسم الشخصي : أيوب") == 1
     assert sc.apply_changes(NAME_DOCUMENT, changes) == NAME_DOCUMENT      # nothing applied by default
 
 
 def test_a_misread_latin_name_gets_a_proposal(ollama):
-    text = NAME_DOCUMENT.replace("ملال", "بلال").replace("BILAL", "BIRAL")
+    text = NAME_DOCUMENT.replace("أيرب", "أيوب").replace("AYOUB", "AYOUR")
     ollama.answer = lambda lines: lines
-    ollama.names_answer = lambda names: [{"arabic_of_latin": "بيرال", "latin_of_arabic": "BILAL"}]
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "أيور", "latin_of_arabic": "AYOUB"}]
     changes, _ = sc.propose(text)
     [change] = [c for c in changes if c.get("source") == "names"]
-    assert (change["old"], change["new"]) == (["BIRAL"], ["BILAL"])
+    assert (change["old"], change["new"]) == (["AYOUR"], ["AYOUB"])
 
 
 def test_both_sides_are_proposed_on_a_tie(ollama, no_names_json):
     ollama.answer = lambda lines: lines
-    ollama.names_answer = lambda names: [{"arabic_of_latin": "بلال", "latin_of_arabic": "MILAL"}]
+    ollama.names_answer = lambda names: [{"arabic_of_latin": "أيوب", "latin_of_arabic": "AYRUB"}]
     changes, _ = sc.propose(NAME_DOCUMENT)
-    assert {tuple(c["new"]) for c in changes if c.get("source") == "names"} == {("بلال",), ("MILAL",)}
+    assert {tuple(c["new"]) for c in changes if c.get("source") == "names"} == {("أيوب",), ("AYRUB",)}
 
 
 @pytest.mark.parametrize("answer", [
     {"arabic_of_latin": "هشام", "latin_of_arabic": "HICHAM"},     # another name altogether
-    {"arabic_of_latin": "ملال", "latin_of_arabic": "BILAL"},      # the readings sent back: no correction
+    {"arabic_of_latin": "أيرب", "latin_of_arabic": "AYOUB"},      # the readings sent back: no correction
     {},                                                          # nothing usable
 ])
 def test_without_a_usable_proposal_the_name_is_flagged(ollama, answer, no_names_json):
@@ -709,8 +686,8 @@ def test_without_a_usable_proposal_the_name_is_flagged(ollama, answer, no_names_
     ollama.names_answer = lambda names: [answer]
     changes, notes = sc.propose(NAME_DOCUMENT)
     [flag] = [c for c in changes if c.get("source") == "names"]
-    assert flag["flag"] and flag["old"] == flag["new"] == ["ملال"] and not flag["accepted"]
-    assert "BILAL" in flag["context"] and any("do not match" in n for n in notes)
+    assert flag["flag"] and flag["old"] == flag["new"] == ["أيرب"] and not flag["accepted"]
+    assert "AYOUB" in flag["context"] and any("do not match" in n for n in notes)
     assert sc.apply_changes(NAME_DOCUMENT, changes, {changes.index(flag)}) == NAME_DOCUMENT
 
 
@@ -727,12 +704,12 @@ def test_names_without_the_model(monkeypatch, no_names_json):
     changes, notes = sc.propose(NAME_DOCUMENT)
     [flag] = [c for c in changes if c.get("source") == "names"]
     assert flag["flag"]
-    assert any("'ملال'" in n and "'BILAL'" in n for n in notes)
+    assert any("'أيرب'" in n and "'AYOUB'" in n for n in notes)
 
 
 def test_agreeing_names_cost_no_request(ollama):
     ollama.answer = lambda lines: lines
-    sc.propose(NAME_DOCUMENT.replace("ملال", "بلال"))
+    sc.propose(NAME_DOCUMENT.replace("أيرب", "أيوب"))
     assert not any("names" in json.loads(r["messages"][1]["content"]) for r in ollama.requests)
 
 
@@ -745,8 +722,8 @@ def test_app_shows_a_flag_that_cannot_be_accepted(ollama, no_names_json):
     state = {**app.NO_SPELLING, "text": NAME_DOCUMENT, "changes": changes, "accepted": []}
     view, details, state = app.spelling_review(state)
     pieces = [(p["token"], p["class_or_confidence"]) if isinstance(p, dict) else tuple(p) for p in view.value]
-    assert ("ملال", "≠ BILAL") in pieces and "no correction found" in details
-    piece = pieces.index(("ملال", "≠ BILAL"))
+    assert ("أيرب", "≠ AYOUB") in pieces and "no correction found" in details
+    piece = pieces.index(("أيرب", "≠ AYOUB"))
 
     class Click:
         index = piece
@@ -754,79 +731,56 @@ def test_app_shows_a_flag_that_cannot_be_accepted(ollama, no_names_json):
     assert state["accepted"] == []
 
 # ---------------------------------------------------------------------------------------------------------
-# the certificate read as a whole (the user's documents, anonymized)
+# the certificate read as a whole (samples with reading mistakes, see documents.py)
 # ---------------------------------------------------------------------------------------------------------
 def test_names_json_fixes_the_child_name(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
     changes, _ = sc.propose(NAME_DOCUMENT)
     [fix] = [c for c in changes if c.get("source") == "names"]
-    assert fix["accepted"] and fix["new"] == ["بلال"] and "names.json" in fix["context"]
-
-
-COHERENCE_DOCUMENT = (
-    "رسم ولادة رقم: 08\n"
-    "في يوم : فاتح ذو القعدة\n"
-    "عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق خامس و عشري دجنبر سنة ألفين و ثلاثن ميلادية\n"
-    "على الساعة: الواحدة و العشرين\n"
-    "وة: الصفر.\n"
-    "ولد ب محج المستتشفى مدينة خريبڭة.\n"
-    "PRENOM NABIL\n"
-    "NOM IQLI\n"
-    "الإسم الشخصي : ببيل\n"
-    "ذكر\n"
-    "الإسم العائلي : احلي\n"
-    "من والده: عزيز اقلي بن محمد\n"
-    "جنسيته: مغربية.\n"
-    "المولود ب جماعة العنوصر دائرة صفرو اقليم صمرو.\n"
-    "في: عام ألف و ثلاثمائة و اثنان و تسعين هجرية.\n"
-    "موافق: لسنة ألف و تسعمائة و اثنان و سبعين ميلادية.\n"
-    "و والدته زهرة افوضي بنت محهد\n"
-    "المولودة بجماعة اليوسفة الحضرية اقليم أسي.\n"
-    "جنسيتها: مغربية\n"
-    "في: عام ألف و ثلاثمائة و سبعة و تسعين هجرية\n"
-    "موافق: لسنة ألف و تسعمائة و سبعة و سبعين ميلادية.\n"
-    "الساكنان حي القدس الزنقة: 11 الرقم : 16 مدينة خريبڭة.\n"
-    "حرفتها : ربة البيت\n"
-    "بناءا على ما صرحت به السيدة زهرة افوضي (والدته) تحت عدد : 08 عمرها سبعة و عشرون سنة\n"
-    "حرفتها ربة البيت جنسيتها مغربية الساكن بحي القدس الزنقة: 12 الرقم : 16 خريبڭة.\n"
-    "وحرر في رابع عشر ذو القعدة عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق: سابع يناير سنة ألفين و أربعة ميلادية.\n"
-    "من طرفنا نحن لحسن شميطي موظف جماعي\n"
-)
+    assert fix["accepted"] and fix["new"] == ["أيوب"] and "names.json" in fix["context"]
 
 
 def test_the_certificate_is_read_as_a_whole(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
     changes, _ = sc.propose(COHERENCE_DOCUMENT)
     by_old = {" ".join(c["old"]): c for c in changes}
-    assert by_old["ثلاثن"]["new"] == ["ثلاثة"] and by_old["ثلاثن"]["accepted"]       # 2003, as the Hijri date
+    assert by_old["خمسن"]["new"] == ["خمسة"] and by_old["خمسن"]["accepted"]         # 2015, as the Hijri date
     assert by_old["وة"]["new"] == ["و", "الدقيقة"] and by_old["وة"]["accepted"]      # the minute's label
     assert by_old["المستتشفى"]["new"] == ["المستشفى"] and by_old["المستتشفى"]["accepted"]
-    assert by_old["ببيل"]["new"] == ["نبيل"] and by_old["ببيل"]["accepted"]          # names.json + NABIL
-    assert by_old["احلي"]["new"] == ["اقلي"] and by_old["احلي"]["accepted"]          # the father's name
-    assert by_old["صمرو"]["new"] == ["صفرو"] and by_old["صمرو"]["accepted"]          # written on the same line
-    assert by_old["محهد"]["new"] == ["محمد"] and by_old["محهد"]["accepted"]          # "بن محمد" on line 13
+    assert by_old["إدريش"]["new"] in (["إدريس"], ["ادريس"]) and by_old["إدريش"]["accepted"]   # names.json + IDRISS
+    assert by_old["الودعيري"]["new"] == ["الودغيري"] and by_old["الودعيري"]["accepted"]  # the father's name
+    assert by_old["برشبد"]["new"] == ["برشيد"] and by_old["برشبد"]["accepted"]       # written on the same line
+    assert by_old["حالد"]["new"] == ["خالد"] and by_old["حالد"]["accepted"]          # the father is خالد
+    assert "رحال" not in by_old                                       # in "سيدي رحال": a place, not a name
     assert not by_old["اليوسفة"]["accepted"]                                          # proposed only
     assert by_old["أسي"]["new"] == ["آسفي"] and "options" not in by_old["أسي"]       # أسا: another region
-    assert by_old["11"]["check"] and by_old["11"]["new"] == ["12"] and not by_old["11"]["accepted"]
-    assert by_old["12"]["check"] and by_old["12"]["new"] == ["11"]                    # the address twice
+    assert by_old["591"]["check"] and by_old["591"]["new"] == ["519"] and not by_old["591"]["accepted"]
+    assert by_old["519"]["check"] and by_old["519"]["new"] == ["591"]                 # the address twice
     record, issues = sc.record_of(sc.apply_changes(COHERENCE_DOCUMENT, changes))
-    assert (record["HEURENAISS"], record["MINNAISS"], record["DATENAISSFR"]) == (21, 0, "2003-12-25")
-    assert record["PRENOMAR"] == "نبيل" and record["NOMAR"] == "اقلي"
+    assert (record["HEURENAISS"], record["MINNAISS"], record["DATENAISSFR"]) == (4, 30, "2015-01-03")
+    assert record["NOMAR"] == "الودغيري" and record["NOMMEREAR"] == "بنت خالد"
     for c in changes:
-        assert c["old"] != ["ثالث"] and c["old"] != ["خامس"]                          # correct words left alone
+        assert c["old"] != ["ثالث"] and c["old"] != ["الرابعة"]                       # correct words left alone
+
+
+def test_an_article_is_kept(monkeypatch):
+    """"بنت عبد العزير": the first name of names.json is written with the article read ("العزيز")."""
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    text = sample(3).replace("بنت عبد العزيز", "بنت عبد العزير")
+    changes, _ = sc.propose(text)
+    [fix] = [c for c in changes if c["old"] == ["العزير"]]
+    assert fix["new"] == ["العزيز"] and fix["accepted"]                # written so for the father's father
 
 
 def test_an_unreadable_gregorian_date_gets_the_hijri_one(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
-    text = COHERENCE_DOCUMENT.replace("خامس و عشري دجنبر سنة ألفين و ثلاثن", "خامس من دعر رسنة")
+    text = COHERENCE_DOCUMENT.replace("ثالث يناير سنة ألفين و خمسن عشرة", "ثالث من دعر رسنة")
     changes, _ = sc.propose(text)
-    [date] = [c for c in changes if c.get("source") == "dates"]
+    [date] = [c for c in changes if c.get("source") == "dates" and c["line"] == 3]   # (line 24: the mother's year)
     assert not date["accepted"] and date["check"] and len(date["options"]) == 3
     import datetime
     days = [sc.reads_as("DATENAISSFR", " ".join(o)) for o in date["options"]]
-    expected = sc.hijri_to_gregorian(1424, 11, 1)
+    expected = sc.hijri_to_gregorian(1436, 3, 12)
     assert days[0] == expected.isoformat()
     assert sorted(days) == [(expected + datetime.timedelta(days=d)).isoformat() for d in (-1, 0, 1)]
     record, _ = sc.record_of(sc.apply_changes(text, changes, {changes.index(date)}))
@@ -847,85 +801,50 @@ def test_year_words_read_back(year):
 def test_a_form_word_added_by_the_model(ollama, monkeypatch):
     """The model restores "الدقيقة": kept when the record needs it (the rule is switched off to see the model)."""
     monkeypatch.setattr(sc, "minute_label", lambda lines, changes: [])
-    text = COHERENCE_DOCUMENT.replace("وة: الصفر.", "و الصفر.")
-    ollama.answer = lambda lines: [l.replace("و الصفر.", "و الدقيقة الصفر.") for l in lines]
+    text = COHERENCE_DOCUMENT.replace("وة : الثلاثين.", "و الثلاثين.")
+    ollama.answer = lambda lines: [l.replace("و الثلاثين.", "و الدقيقة الثلاثين.") for l in lines]
     changes, _ = sc.propose(text)
     [added] = [c for c in changes if c.get("source") == "added"]
-    assert added["accepted"] and added["new"] == ["الدقيقة", "الصفر"]
+    assert added["accepted"] and added["new"] == ["الدقيقة", "الثلاثين"]
     record, _ = sc.record_of(sc.apply_changes(text, changes))
-    assert (record["HEURENAISS"], record["MINNAISS"]) == (21, 0)
+    assert (record["HEURENAISS"], record["MINNAISS"]) == (4, 30)
 
 
 def test_a_name_added_by_the_model_is_never_proposed(ollama):
-    ollama.answer = lambda lines: [l.replace("عزيز اقلي", "عزيز محمد اقلي") for l in lines]
+    ollama.answer = lambda lines: [l.replace("خالد الودغيري", "خالد محمد الودغيري") for l in lines]
     changes, _ = sc.propose(COHERENCE_DOCUMENT)
     assert not [c for c in changes if c.get("source") == "added"]
-
-
-DECLARANT_DOCUMENT = (
-    "رسم ولادة رقم: 04\n"
-    "في يوم: ثالث و عشري شوال\n"
-    "عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق سامع عشر دجرة سنة الفين و ثلاثة ميلادية.\n"
-    "و الدقيقة الصفر.\n"
-    "على الساعة الثالثة و العشرين\n"
-    "ولد ب محج المستشفى مدينة خريبڭة.\n"
-    "PRENOM DOHA\n"
-    "NOM MAROUF\n"
-    "الإسم الشخصي : ضحى\n"
-    "أنثى\n"
-    "الإسم العائلي: معروى\n"
-    "من والدها رحال معروف بن بوشعيب\n"
-    "جنسيته: مغربية.\n"
-    "المولود ب جماعة خريبڭة الحضرية اقليم خريبڭة.\n"
-    "في: عام ألف و ثلاثمائة و اثنين و سبعين هجرية\n"
-    "موافق لسنة ألف و تسعمائة و ثلاثة و سبعين ميلادية.\n"
-    "و والدتها بهمة السكتاني بنت محمد.\n"
-    "المولودة بجماعة اولاد فارس اقليم سطات.\n"
-    "حرفته بتاء\n"
-    "جنسيتها: مغربية\n"
-    "في: عام ألف و ثلاثمائة و تسعة و تسعين هجرية\n"
-    "موافق لسنة ألف و تسعمائة و تسعة و سبعين ميلادية.\n"
-    "الساكنان حي القدس الأول الرقم : 1640 خريبڭة.\n"
-    "حرفتها : ربة البيت.\n"
-    "بناءا على ما صرحت به السيدة نعيمة السكتاني (والدتها) تحت عدد : 04 عمرهار خمسة و عشرون سنة\n"
-    "حرفتها ربة البيت جنسيتها مغربية الساكن بحي القدس الأول الرق : : 164 خريبڭة.\n"
-    "وحرر في تاسع ذو القعدة عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق ثاني يناير سنة ألفين و أربعة ميلادية.\n"
-    "من طرفنا نحن لحسن شميطي موظف جماعي\n"
-)
 
 
 def test_the_declarant_and_the_dates(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
     changes, _ = sc.propose(DECLARANT_DOCUMENT)
     by_old = {" ".join(c["old"]): c for c in changes}
-    # day and month misread: the Hijri date gives the date, the closest day to what was read (17, not 18)
+    # day and month misread: the Hijri date gives the date, the closest day to what was read (4, not 5)
     date = next(c for c in changes if c.get("source") == "dates")
-    assert date["accepted"] and date["new"][:3] == ["سابع", "عشر", "دجنبر"]
+    assert date["accepted"] and date["new"][:2] == ["رابع", "يناير"]
     assert "فارس" not in by_old                                    # "اولاد فارس" is a commune (not Fès)
-    mother = by_old["بهمة"]                                         # the declarant is the mother
-    assert mother["new"] == ["نعيمة"] and not mother["accepted"]    # 3 letters: proposed only
-    assert by_old["عمرهار"]["new"] == ["عمرها"] and by_old["الرق"]["new"] == ["الرقم"]
-    assert by_old["1640"]["check"] and by_old["1640"]["new"] == ["164"] and not by_old["1640"]["accepted"]
-    assert by_old["164"]["new"] == ["1640"]
+    mother = by_old["عرلاب"]                                        # the declarant is the mother
+    assert mother["new"] == ["غزلان"] and not mother["accepted"]    # 3 letters: proposed only
     assert mother["check"]                                          # orange in the review, applied by a click
+    assert by_old["عمرهار"]["new"] == ["عمرها"] and by_old["الرق"]["new"] == ["الرقم"]
+    assert by_old["57"]["check"] and by_old["57"]["new"] == ["75"] and not by_old["57"]["accepted"]
+    assert by_old["75"]["new"] == ["57"]
     record, issues = sc.record_of(sc.apply_changes(DECLARANT_DOCUMENT, changes))
-    assert record["DATENAISSFR"] == "2003-12-17"
+    assert record["DATENAISSFR"] == "2008-01-04"
     assert not [i for i in issues if i["level"] == "error"]
 
 
-
 def test_the_year_on_the_next_line(monkeypatch):
-    """The scan cuts the date after the month: the day and the month are proposed, the year line is kept."""
+    """The scan cuts the date after the month: the day and the month are proposed, the year line is kept. Too
+    many letters differ to apply it by itself: in orange, a click applies it."""
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
-    text = DECLARANT_DOCUMENT.replace("موافق سامع عشر دجرة سنة الفين و ثلاثة ميلادية.",
-                                      "موافق سامع عشر دجرة\nسنة الفين و ثلاثة ميلادية.")
-    changes, _ = sc.propose(text)
+    changes, _ = sc.propose(DECLARANT_TWO_LINES)
     date = next(c for c in changes if c.get("source") == "dates")
-    assert date["accepted"] and date["new"] == ["سابع", "عشر", "دجنبر"]
-    record, _ = sc.record_of(sc.apply_changes(text, changes))
-    assert record["DATENAISSFR"] == "2003-12-17"
+    assert date["check"] and date["new"] == ["رابع", "يناير"]
+    record, _ = sc.record_of(sc.apply_changes(DECLARANT_TWO_LINES, changes,
+                                              {i for i, c in enumerate(changes) if c["accepted"] or c is date}))
+    assert record["DATENAISSFR"] == "2008-01-04"
 
 
 def test_app_a_check_is_orange_and_clickable(monkeypatch):
@@ -936,119 +855,47 @@ def test_app_a_check_is_orange_and_clickable(monkeypatch):
     state = {**app.NO_SPELLING, "text": DECLARANT_DOCUMENT, "changes": changes, "accepted": accepted}
     view, details, state = app.spelling_review(state)
     pieces = [(p["token"], p["class_or_confidence"]) if isinstance(p, dict) else tuple(p) for p in view.value]
-    assert ("1640", "≠ 164") in pieces and view.color_map["≠ 164"] == app.FLAG_COLOR
-    index = next(i for i, c in enumerate(changes) if c["old"] == ["1640"])
+    assert ("57", "≠ 75") in pieces and view.color_map["≠ 75"] == app.FLAG_COLOR
+    index = next(i for i, c in enumerate(changes) if c["old"] == ["57"])
     segment = state["segments"].index(index)
     view, details, state = app.toggle_change(state, type("Evt", (), {"index": segment})())
     pieces = [(p["token"], p["class_or_confidence"]) if isinstance(p, dict) else tuple(p) for p in view.value]
-    assert ("1640", "✓ 164") in pieces and index in state["accepted"]
-
-
-LAHNICHE_DOCUMENT = (
-    "رسم ولادة رقم: 05\n"
-    "في يوم: تاسع عشر شوال\n"
-    "عام : ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق : رابع عشر تير\n"
-    "سنة ألفين و ثلاثة ميلادية\n"
-    "و الدقيقة: الثلاثين\n"
-    "على الساعة: السادسة\n"
-    "ولد ب: محج المسشفى مدينة خريبڭة.\n"
-    "PRENOM FATIMA EZZAHRA\n"
-    "NOM LAHNICHE\n"
-    "الإسم الشخصي: فاطمة الزهراء\n"
-    "أنثى\n"
-    "الإسم العائلي: لحيس\n"
-    "من والدها المصطفى لحنيش بن الميلودي\n"
-    "جنسيته: مغربية.\n"
-    "المولود ب جماعة حطان الحضرية دائرة خريبڭة اقليم خريبڭة.\n"
-    "في: عاشر ذو القعدة عام ألف و ثلاثمائة و خمسة و ثمانين هجرية\n"
-    "موافق ثاني مارس سنة ألف و تسعمائة و تسعة و ستين ميلادية\n"
-    "و والدتها ربيعة سهران بنت بقاسم\n"
-    "المولودة بجماعة الفقراء اقليم خريبڭة.\n"
-    "حرفته مياوم\n"
-    "جنسيتها: مغربية\n"
-    "في ثاني جمادى الأولى عام ألف و ثلاثمائة و ستة و تسعين هجرية\n"
-    "موافق: فاتح ماي سنة ألف و تسعمائة و سبعة و سبعين ميلادية\n"
-    "الساكنان بحي القدس الأول الرقم : 508 خريبڭة.\n"
-    "حرفتها : ربة البيت.\n"
-    "بناءا على ما صرح به السيد المصطفى لحنيسن (والدها) تحت عدد : 05 عمره ثمانة و ثلاثون سنة\n"
-    "حرفته مياوم جنسيته مغربية الساكن بحي القدس الأول الرقم : 508 خريبڭة.\n"
-    "وحرر في تاسع ذو القعدة عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق ثاني يناير سنة ألفين و أربعة ميلادية.\n"
-    "من طرفنا نحن لحسن شميطي موظف جماعي\n"
-    "و بعد تلاوة الرسم على المصرح (و وقعناه وحدنا) وضابط الحالة المدنية\n"
-    "بالتفويض٪\n"
-    "توقيع المصرح\n"
-)
+    assert ("57", "✓ 75") in pieces and index in state["accepted"]
 
 
 def test_the_child_family_name_and_the_declarant(monkeypatch):
-    """لحيس / LAHNICHE: the father is لحنيش (two letters); the declarant's لحنيسن is the misreading, not the
-    father's line (the child's Latin name decides)."""
+    """الإيريشي / IDRISSI: the father is الإدريسي (two letters); the declarant's الإدريسن is the misreading, not
+    the father's line (the child's Latin name decides)."""
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
-    changes, _ = sc.propose(LAHNICHE_DOCUMENT)
+    changes, _ = sc.propose(FATHER_DECLARANT_DOCUMENT)
     by_old = {" ".join(c["old"]): c for c in changes}
-    assert by_old["لحيس"]["new"] == ["لحنيش"] and by_old["لحيس"]["accepted"]
-    assert by_old["لحنيسن"]["new"] == ["لحنيش"] and by_old["لحنيسن"]["accepted"]
-    assert "لحنيش" not in by_old                                       # the father's reading is kept
+    assert by_old["الإيريشي"]["new"] == ["الإدريسي"] and by_old["الإيريشي"]["accepted"]
+    assert by_old["الإدريسن"]["new"] == ["الإدريسي"] and by_old["الإدريسن"]["accepted"]
+    assert "الإدريسي" not in by_old                                     # the father's reading is kept
     assert by_old["ثمانة"]["new"] == ["ثمانية"]                         # the last letter kept
-    year = by_old["ألف و تسعمائة و تسعة و ستين"]                        # 10 Dhu al-Qa'da 1385 = 2 March 1966
-    assert year["check"] and not year["accepted"] and year["new"] == "ألف و تسعمائة و ستة و ستين".split()
-    record, _ = sc.record_of(sc.apply_changes(LAHNICHE_DOCUMENT, changes))
-    assert record["NOMAR"] == "لحنيش" and record["DATENAISSFR"] == "2003-12-14"
-    record, _ = sc.record_of(sc.apply_changes(LAHNICHE_DOCUMENT, changes,
+    year = by_old["ألف و تسعمائة و تسعة و ثمانين"]                       # 3 Rabi I 1407 = 6 November 1986
+    assert year["check"] and not year["accepted"] and year["new"] == "ألف و تسعمائة و ستة و ثمانين".split()
+    date = by_old["ثاني عشر تير"]                                       # the year on the next line
+    assert date["accepted"] and date["new"] == ["ثاني", "عشر", "نونبر"]
+    record, _ = sc.record_of(sc.apply_changes(FATHER_DECLARANT_DOCUMENT, changes))
+    assert record["NOMAR"] == "الإدريسي" and record["DATENAISSFR"] == "2016-11-12"
+    record, _ = sc.record_of(sc.apply_changes(FATHER_DECLARANT_DOCUMENT, changes,
                                               {i for i, c in enumerate(changes) if c["accepted"] or c is year}))
-    assert record["DATENAISSPEREFR"] == "1966-03-02"
-
-
-EMPTY_MINUTE_DOCUMENT = (
-    "رسم ولادة رقم: 06\n"
-    "في يوم : عاشر ذو القعدة\n"
-    "عام: ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق ثالث يناير سنة ألفين و أربعة ميلادية.\n"
-    "و الدقيقة\n"
-    "على الساعة العشرين\n"
-    "ولد ب حي المناومة الزنقة: 19 الرقم: 31 مدينة خريبڭة.\n"
-    "PRENOM IMANE\n"
-    "NOM HANNOUR\n"
-    "الإسم الشخصي: ايمان\n"
-    "أنثى\n"
-    "الإسم العائلي: ينور\n"
-    "من والدها حسن هنور بن العربي جنسيته :مغربية\n"
-    "المولود ب جماعة خريبڭة الحضرية اقليم خريبڭة.\n"
-    "في : تاسع و عشري جمادى الثانية عام ألف و ثلاثمائة و تسعة و سبعين هجرية.\n"
-    "موافق ثلاثين دجنبر سنة ألف و تسعمائة و تسعة و خمسين ميلادية.\n"
-    "و والدتها مليكة كنوبست الكبير.\n"
-    "المولودة بجماعة كنير اقليم سطات.\n"
-    "حرفته سائق.\n"
-    "جنسيتها: مغربية\n"
-    "في: عام ألف و ثلاثمائة و ثمانية و ثمانين هجرية\n"
-    "موافق لسنةة ألف و تسعمائة و تسعة و ستين ميلادية\n"
-    "الساكنان: حي المعاومة.\n"
-    "حرفتها : ربة البيت.\n"
-    "الزنقة: 19 الرقم: 31 مدينة خريبڭة.\n"
-    "بناءا على ما صرح به السيد حسن هنور (والدها) تحت عدد : 06 عمره خمسة و أربعون\n"
-    "سنة حرفته سائق جنسيته مغربية الساكن بحي القاومة الزنقة: 1 الرقم : 31 خريبڭة.\n"
-    "وحرر في رابع عشر ذو القعدة عام ألف و أربعمائة و أربعة و عشرين هجرية\n"
-    "موافق سابع يناير سنة ألفين و أربعة ميلادية.\n"
-    "من طرفنا نحن لحسن شميطي موظف جماعي\n"
-    "و بعد تلاوة الرسم على المصرح (و وقعه معنا) وضابط الحالة المدنية بالتفويض٪\n"
-    "توقيع المصرح:\n"
-)
+    assert record["DATENAISSPEREFR"] == "1986-11-06"
 
 
 def test_an_empty_minute_and_the_address(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
     record, issues = sc.record_of(EMPTY_MINUTE_DOCUMENT)
-    assert (record["HEURENAISS"], record["MINNAISS"]) == (20, "")       # "و الدقيقة" alone: empty, not the hour
+    assert (record["HEURENAISS"], record["MINNAISS"]) == (16, "")       # "و الدقيقة" alone: empty, not the hour
     assert [i["level"] for i in issues if i["field"] == "MINNAISS"] == ["warning"]
     changes, _ = sc.propose(EMPTY_MINUTE_DOCUMENT)
     by_old = {" ".join(c["old"]): c for c in changes}
     assert "القاومة" not in by_old                                     # a neighbourhood, not "القروية"
-    assert by_old["كنوبست"]["new"] == ["كنو", "بنت"] and by_old["كنوبست"]["accepted"]
+    assert by_old["العمرانيبست"]["new"] == ["العمراني", "بنت"] and by_old["العمرانيبست"]["accepted"]
     assert by_old["19"]["check"] and by_old["19"]["new"] == ["1"]         # the address after the mother's job
     record, _ = sc.record_of(sc.apply_changes(EMPTY_MINUTE_DOCUMENT, changes))
-    assert record["NOMMEREAR"] == "بنت الكبير" and record["NOMAR"] == "هنور"
+    assert record["NOMMEREAR"] == "بنت رضا" and record["NOMAR"] == "الساحلي"
 
 
 def test_the_neighbourhoods_of_spelling_words(monkeypatch):

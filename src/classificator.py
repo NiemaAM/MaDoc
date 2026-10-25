@@ -19,7 +19,7 @@ know in which part of the document (child, father, mother, administration) every
 Both models run on this computer with transformers (nothing is sent online):
   - Arabic: TypicaAI/MagBERT-NER-AR, on the whole text,
   - French: TypicaAI/magbert-ner (the model behind the Hugging Face Space TypicaAI/MagBERT-NER-Fr), only on the
-    lines written in Latin letters ("PRENOM ZAKARIYA", "NOM KABLI"): the rest of a certificate is Arabic.
+    lines written in Latin letters ("PRENOM AYOUB", "NOM SBAI"): the rest of a certificate is Arabic.
 The French model is gated on Hugging Face: accept its conditions once and log in with a token (README), then it
 is kept in the Hugging Face cache; HF_HUB_OFFLINE=1 (environment or .env) forbids any further download.
 The online Space is used only when MADOC_FRENCH_NER_SPACE=1 is set and the local model cannot be loaded.
