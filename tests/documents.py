@@ -116,3 +116,15 @@ NATIONALITY_DOCUMENT = from_sample(
     ("جنسيته : مغربية.\n", "{father}"),
     ("جنسيتها : مغربية\n", "{mother}"),
 )
+
+def moved(text, line, to):
+    """The text with its line `line` (counted from 1) moved to the place `to`: the HTR reading lines out of
+    order."""
+    lines = text.split("\n")
+    lines.insert(to - 1, lines.pop(line - 1))
+    return "\n".join(lines)
+
+
+# --- sample 2, read out of order ------------------------------------------------------------------------
+# the minute before the hour, "و" of the mother's line missing ("والدته"), her job after the parents' address
+OUT_OF_ORDER_DOCUMENT = moved(moved(from_sample(2, ("و والدته", "والدته")), 6, 5), 25, 26)

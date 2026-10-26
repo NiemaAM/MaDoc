@@ -754,3 +754,57 @@ def test_app_files_are_named_after_the_scan(tmp_path):
     assert archive.read("1.jpg") == b"the scan as uploaded"                       # the original, unchanged
     assert 'imageFilename="1.jpg"' in archive.read("1.xml").decode("utf-8")
     assert Path(doc["files"]["zip"]).name == "1.zip"
+
+# --- lines read out of order -------------------------------------------------------------------------------
+def test_parser_reads_lines_out_of_order():
+    import parser as record_parser
+    from documents import APP_TEXT, OUT_OF_ORDER_DOCUMENT
+    record, notes = record_parser.parse_with_notes(OUT_OF_ORDER_DOCUMENT)
+    assert record == record_parser.parse(APP_TEXT)
+    assert record["PRENOMMEREAR"] and record["PROFESSIONMERE"] == "ربة بيت"
+    assert "حرفت" not in record["ADRESSEPARENT"] and record["MINNAISS"] == "الصفر"
+    assert any("not in the order of the form" in note for note in notes)
+
+
+def test_parser_same_record_whatever_two_lines_are_swapped():
+    import parser as record_parser
+    from common import ar_key
+    from documents import moved, sample
+    for number in range(1, 7):
+        text = sample(number)
+        expected = record_parser.parse(text)
+        for line in range(1, text.count("\n")):
+            record = record_parser.parse(moved(text, line, line + 1))
+            differ = [f for f in expected if f != "TEXTEDECLA" and ar_key(record[f]) != ar_key(expected[f])]
+            assert not differ, f"samples/{number}.txt, lines {line} and {line + 1} swapped: {differ}"
+
+
+def test_parser_dates_and_nationalities_find_their_parent():
+    import parser as record_parser
+    from documents import moved, sample
+    text = sample(1)
+    expected = record_parser.parse(text)
+    for line, to in ((18, 20), (17, 20), (20, 17), (11, 14)):   # a date / the mother's line / a nationality
+        record = record_parser.parse(moved(text, line, to))
+        for field in ("DATENAISSPEREAR", "DATENAISSPEREFR", "DATENAISSMEREAR", "DATENAISSMEREFR",
+                      "NATIONALITE", "NATIONALITEPERE", "NATIONALITEMERE"):
+            assert record[field] == expected[field], (line, to, field)
+
+
+def test_parser_text_in_order_is_not_moved():
+    import parser as record_parser
+    from documents import APP_TEXT
+    text, count, new_line = record_parser.restore_order(APP_TEXT)
+    assert text == APP_TEXT and count == 0 and all(old == new for old, new in new_line.items())
+
+
+def test_parser_ner_offsets_move_with_their_lines():
+    import parser as record_parser
+    from documents import OUT_OF_ORDER_DOCUMENT
+    raw = OUT_OF_ORDER_DOCUMENT
+    ordered, _, new_line = record_parser.restore_order(raw)
+    words = ["زينب", "الصفر", "ربة بيت", "خريبڭة"]
+    ner = {"arabic_ner": [{"entity": w, "label": "PERSON", "start": raw.index(w), "end": raw.index(w) + len(w)}
+                          for w in words]}
+    for item in record_parser.move_ner(ner, raw, new_line)["arabic_ner"]:
+        assert ordered[item["start"]:item["end"]] == item["entity"]

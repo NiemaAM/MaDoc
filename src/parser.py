@@ -4,6 +4,13 @@
     python src/parser.py samples/6.txt ner.json -o parsed.json --notes
     python src/parser.py samples/6.txt                        # without NER (rules only)
 
+Lines read out of order
+  0. The HTR does not always read the lines in the order of the form. restore_order() recognizes every line by
+     its label and puts it back in its part (child / father / mother / address / declaration) and in the order
+     of the form; a date or a nationality line goes to its parent by the year of the Hijri date next to it and
+     by its gender ("جنسيته" / "جنسيتها"). A text already in order is not changed. The NER offsets move with
+     their lines.
+
 How the two sources are combined
   1. The rules (regex) cut the text into zones (child / father / mother / administration) with the
      fixed labels of the form ("من والده", "و والدته", "الساكنان", ...) and read every field in its zone.
@@ -58,7 +65,9 @@ BIRTH_PREP = r"(?:ب\s+|ب(?=" + PLACE_WORDS + r"))"
 BORN_VERB = r"(?:ولد|والد)ت?"
 # markers of the parent blocks; the suffix may be split over two lines ("والد" + "ها")
 FATHER_MARK = r"من\s+والد\s*(?:ه|ها)"
-MOTHER_MARK = r"و\s*والدت\s*(?:ه|ها)"
+# "و" is often missing or on the line before ("والدته" alone at the start of a line); "(والدته)" of the declaration
+# is not a marker
+MOTHER_MARK = r"(?<!\(\s)(?:و\s*)?والدت\s*(?:ه|ها)"
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +176,7 @@ def strip_attached_b(place):
 # words that end a profession when the profession is not in the jobs dictionary
 JOB_STOP = (
     r"(?=\s*(?<!\S)(?:المولود|جنسيت|في\s|(?:ال)?موا?فق|حرفت|مهنت|الساكن|الزنقة|الرقم|زنقة|رقم|"
-    r"شارع|درب|دوار|مدينة|بناء|توقيع|و\s*والد)|\s*$)"
+    r"شارع|درب|دوار|مدينة|بناء|توقيع|و\s*والد|والدت\s*(?:ه|ها)(?!\S))|\s*$)"
 )
 
 
@@ -682,10 +691,314 @@ def find_zones(txt):
     return child_zone, father_zone, mother_zone, administrative_zone
 
 
+# ---------------------------------------------------------------------------
+# line order: the HTR does not always read the lines in the order of the form
+# ---------------------------------------------------------------------------
+CHILD, FATHER, MOTHER, ADDRESS, DECLARATION = range(5)
+# the kind of a line, from its first words (tried in this order): (kind, pattern, zone, rank in the zone).
+# zone None: a line every zone has (date, nationality), its zone comes from where it is (see restore_order).
+LINE_KINDS = [
+    ("number", r"^رسم\s+(?:ال)?ولادة", CHILD, 0),
+    ("day", r"^في\s+يوم", CHILD, 1),
+    ("written", r"^و\s*حر\w{0,3}\s+في(?:\s|$)", DECLARATION, 2),
+    ("by", r"^من\s+طرفنا", DECLARATION, 4),
+    ("read", r"^و\s*بعد\s+تلاوة", DECLARATION, 5),
+    ("delegation", r"^بالتفويض", DECLARATION, 6),
+    ("signature", r"^توقيع", DECLARATION, 7),
+    ("declaration", r"^بناء[اأ]?\s+على", DECLARATION, 0),
+    ("father", r"^من\s+والد\s*(?:ه|ها)(?:\s|$)", FATHER, 0),
+    ("mother", r"^(?:و\s*)?والدت\s*(?:ه|ها)(?:\s|$)", MOTHER, 0),
+    ("hour", r"^على\s+الساعة", CHILD, 4),
+    ("minute", r"^(?:و\s*)?الدقيقة", CHILD, 5),
+    ("born", r"^(?:ولد|ولدت|والدت?)(?:\s|$)", CHILD, 6),
+    ("first name", r"^ال[إأا]سم\s+الشخصي", CHILD, 7),
+    ("prenom", r"^PRENOM(?:\s|$)", CHILD, 7),
+    ("sex", r"^(?:ذكر|[أا]نثى)$", CHILD, 7),
+    ("family name", r"^ال[إأا]سم\s+العائلي", CHILD, 8),
+    ("nom", r"^NOM(?:\s|$)", CHILD, 8),
+    # "حرفته أجير جنسيته مغربية الساكن ..." is the declaration going on, not the father's job
+    ("declared", r"^(?:سنة\s+)?(?:حرفت|مهنت)\S*\s.*(?:جنسيت|الساكن)", DECLARATION, 1),
+    ("father job", r"^(?:حرفته|مهنته)(?:\s|$)", FATHER, 4),
+    ("mother job", r"^(?:حرفتها|مهنتها)(?:\s|$)", MOTHER, 4),
+    ("father born", r"^المولود(?:\s|$)", FATHER, 1),
+    ("mother born", r"^المولودة(?:\s|$)", MOTHER, 1),
+    ("address", r"^الساكن", ADDRESS, 0),
+    # the end of the address on a line of its own ("الشطر الأول الرقم: 57", "زنقة رام الله الرقم : 31")
+    ("address end", r"^(?:ال)?(?:زنقة|رقم|شارع|درب|تجزئة|[إا]قامة|عمارة|شطر|مجموعة)(?:\s|$)", ADDRESS, 1),
+    ("nationality", r"^جنسيت", None, None),
+    ("gregorian", r"^(?:ال)?موا?فق(?:\s|$)", None, None),
+    ("hijri", r"^(?:في|عام)(?:\s|$)", None, None),
+]
+LINE_PATTERNS = [(kind, re.compile(pattern, re.IGNORECASE), zone, rank)
+                 for kind, pattern, zone, rank in LINE_KINDS]
+# the lines every zone has: how many of them, and their rank in the zone
+SHARED = {
+    "nationality": {CHILD: (1, 7), FATHER: (1, 1), MOTHER: (1, 1)},
+    "gregorian": {CHILD: (1, 3), FATHER: (1, 3), MOTHER: (1, 3), DECLARATION: (1, 3)},
+    "hijri": {CHILD: (1, 2), FATHER: (1, 2), MOTHER: (1, 2)},
+}
+
+
+def line_kind(line):
+    """'من والده نبيل ...' -> ('father', FATHER, 0); a line without a label of the form -> (None, None, None)."""
+    flat = flatten(line)[0]
+    for kind, pattern, zone, rank in LINE_PATTERNS:
+        if pattern.search(flat):
+            return kind, zone, rank
+    return None, None, None
+
+
+# the end of a date on a line of its own ("ألفين و ستة ميلادية"): it goes with the date line next to it
+DATE_ENDS = (("ميلا", ("gregorian",)), ("هجر", ("hijri", "day", "written")))
+
+
+def date_owners(kinds, lines):
+    """{line: date line} for the unlabeled lines that end a date, joined to the nearest date line of that kind
+    (at most two lines away, the one before first)."""
+    owners = {}
+    for i, line in enumerate(lines):
+        if kinds[i] is not None:
+            continue
+        flat = flatten(line)[0]
+        for word, owner_kinds in DATE_ENDS:
+            if re.search(r"(?<!\S)" + word, flat):
+                near = [j for j in (i - 1, i + 1, i - 2, i + 2) if 0 <= j < len(lines) and kinds[j] in owner_kinds]
+                if near:
+                    owners[i] = near[0]
+                break
+    return owners
+
+
+def nationality_gender(line):
+    """'m' for "جنسيته", 'f' for "جنسيتها", None when the label is damaged."""
+    flat = flatten(line)[0]
+    return "f" if re.match(r"جنسيتها", flat) else "m" if re.match(r"جنسيته(?!ا)", flat) else None
+
+
+def child_gender(found, lines):
+    """'f' / 'm' from the sex line of the child (None when there is none)."""
+    for (kind, _, _), line in zip(found, lines):
+        if kind == "sex":
+            return "f" if re.search(r"[أا]نثى", line) else "m"
+    return None
+
+
+def date_year(text, hijri):
+    """The year of a date line as a number ("عام ألف و أربعمائة ..." / "سنة ألفين و ستة ...") or None."""
+    flat = flatten(text)[0]
+    match = re.search(r"(?<!\S)(?:عام|ل?سنة)\s+(.+?)(?=\s+(?:هجر|ميلا)|$)", flat)
+    if not match:
+        return None
+    from converter import get_number_keys, phrase_to_number
+    year = phrase_to_number(match.group(1), get_number_keys())
+    if year is None:
+        return None
+    if hijri:
+        return year * 0.970224 + 621.5744 if 1250 <= year <= 1500 else None
+    return year if 1850 <= year <= 2100 else None
+
+
+def pair_dates(groups, lines):
+    """A Hijri date and the Gregorian date of the same year go together: when they were put in two parts (one of
+    the lines was read far from its place), the moved one joins the part that misses it."""
+    hijri = [g for g in groups if g[3] in ("hijri", "written")]
+    gregorian = [g for g in groups if g[3] == "gregorian"]
+    years = {id(g): date_year(" ".join(lines[i] for i in g[2]), g[3] != "gregorian") for g in hijri + gregorian}
+    pairs = []
+    for h in hijri:
+        for g in gregorian:
+            if years[id(h)] is not None and years[id(g)] is not None and abs(years[id(h)] - years[id(g)]) <= 1.2:
+                pairs.append((abs(h[2][0] - g[2][0]), h, g))
+    used, chosen = set(), []
+    for _, h, g in sorted(pairs, key=lambda p: (p[0], p[1][2][0])):
+        if id(h) not in used and id(g) not in used:
+            used.update((id(h), id(g)))
+            chosen.append((h, g))
+    # the years cannot tell (a year misread): a Gregorian date goes with the nearest Hijri one before it that has
+    # none, else the nearest after it
+    for g in gregorian:
+        if id(g) in used:
+            continue
+        free = [h for h in hijri if id(h) not in used]
+        before = [h for h in free if h[2][0] < g[2][0]]
+        after = [h for h in free if h[2][0] > g[2][0]]
+        h = max(before, key=lambda x: x[2][0]) if before else min(after, key=lambda x: x[2][0]) if after else None
+        if h is not None:
+            used.update((id(h), id(g)))
+            chosen.append((h, g))
+
+    # the parents' dates: the first pair is the father's, the second the mother's (whatever part each line was
+    # read in)
+    parents = sorted(((h, g) for h, g in chosen if h[3] == "hijri" and h[0] != CHILD),
+                     key=lambda pair: min(pair[0][2][0], pair[1][2][0]))
+    if len(parents) == 2:
+        for zone, (h, g) in zip((FATHER, MOTHER), parents):
+            h[0], h[1] = zone, SHARED["hijri"][zone][1]
+            g[0], g[1] = zone, SHARED["gregorian"][zone][1]
+
+    def has(kinds, zone, but):
+        return any(x is not but and x[0] == zone and x[3] in kinds for x in groups)
+
+    # a move can free the place another pair needs: again until nothing moves
+    for _ in range(len(chosen)):
+        changed = False
+        for h, g in chosen:
+            if h[0] == g[0]:
+                continue
+            if not has(("gregorian",), h[0], g) and h[0] in SHARED["gregorian"]:
+                g[0], g[1] = h[0], SHARED["gregorian"][h[0]][1]
+                changed = True
+            elif not has(("hijri", "written"), g[0], h) and g[0] in SHARED["hijri"]:
+                h[0], h[1] = g[0], SHARED["hijri"][g[0]][1]
+                changed = True
+        if not changed:
+            break
+
+
+def restore_order(raw):
+    """Put the lines of the form back in its order: (text, moved lines, {old line: new line}).
+
+    Every line is recognized by its label: a label of one part of the form (child, father, mother, address,
+    declaration) takes the line to that part; a line without a label stays with the line before it (the value
+    goes on). A date or a nationality line belongs to the part it is in, or to the next one when that part has it
+    already (a nationality also by its gender, a Gregorian date by the year of the Hijri one). In each part the
+    lines are sorted by the order of the form; lines whose order does not matter keep theirs, so a text in the
+    right order is not changed."""
+    lines = raw.split("\n")
+    found = [line_kind(line) for line in lines]
+    kinds = [kind for kind, _, _ in found]
+    owners = date_owners(kinds, lines)
+    sex = child_gender(found, lines)
+    groups = []          # [zone, rank, [line indexes], kind]
+    group_of = {}        # line -> its group
+    current = CHILD      # the furthest part reached
+    shared_count = {}
+    top_rank = {}        # zone -> highest rank of a labeled line in it
+
+    def next_kind(i):
+        return next((kinds[j] for j in range(i + 1, len(lines)) if kinds[j]), None)
+
+    def child_nationality_late(i, gender):
+        """The child's nationality read after "من والده": a boy's comes with the father's (two "جنسيته"), a
+        girl's "جنسيتها" before the father's "جنسيته" (after it, it is the mother's read early)."""
+        later = []
+        for j in range(i + 1, len(lines)):
+            if kinds[j] in ("mother", "address", "declaration"):
+                break
+            if kinds[j] == "nationality":
+                later.append(nationality_gender(lines[j]))
+        return "m" in later
+
+    for i, line in enumerate(lines):
+        kind, zone, rank = found[i]
+        if i in owners:                      # the end of a date: with its date line (placed below)
+            continue
+        if kind is None and groups:          # no label: the value of the line before goes on
+            groups[-1][2].append(i)
+            group_of[i] = groups[-1]
+            continue
+        if kind in SHARED:
+            places = SHARED[kind]
+            gender = nationality_gender(line) if kind == "nationality" else None
+
+            def free(z):
+                if z not in places or shared_count.get((kind, z), 0) >= places[z][0]:
+                    return False
+                if kind != "nationality":
+                    return True
+                if (z, gender) in ((FATHER, "f"), (MOTHER, "m")):
+                    return False             # "جنسيتها" is not the father's, "جنسيته" not the mother's
+                # a masculine nationality after the child's family name, just before the father's lines, is his
+                return not (z == CHILD and top_rank.get(CHILD, 0) > places[z][1]
+                            and next_kind(i) in ("father", "father born", "father job") and gender == "m")
+
+            first = current
+            # the child's nationality read after "من والده": two of them before the mother, the child has none
+            if (kind == "nationality" and current == FATHER and gender and gender == sex
+                    and not shared_count.get((kind, CHILD)) and not shared_count.get((kind, FATHER))
+                    and child_nationality_late(i, gender)):
+                first = CHILD
+            zone = next((z for z in range(first, DECLARATION + 1) if free(z)), None)
+            if zone is None:                 # more of them than the form has: leave it where it is
+                zone = current
+                rank = groups[-1][1] if groups else 0
+            else:
+                shared_count[(kind, zone)] = shared_count.get((kind, zone), 0) + 1
+                rank = places[zone][1]
+        elif zone is None:                   # an unlabeled first line
+            zone, rank = CHILD, 0
+        if kind not in SHARED:               # only the labels of one part tell how far the text is
+            current = max(current, zone)
+        top_rank[zone] = max(top_rank.get(zone, 0), rank)
+        groups.append([zone, rank, [i], kind])
+        group_of[i] = groups[-1]
+    for line, owner in owners.items():
+        members = group_of.get(owner, groups[-1] if groups else None)
+        if members is None:
+            groups.append([CHILD, 0, [line], None])
+        else:
+            members[2].append(line)
+            members[2].sort(key=lambda k: (k != owner, k))   # the date line first, then its end
+    pair_dates(groups, lines)
+    order = [i for _, _, members, _ in sorted(groups, key=lambda g: (g[0], g[1])) for i in members]
+    new_line = {old: new for new, old in enumerate(order)}
+    return "\n".join(lines[i] for i in order), moved_count(order, lines), new_line
+
+
+def moved_count(order, lines):
+    """How many (non-empty) lines were moved: those outside the longest run kept in their order."""
+    order = [i for i in order if lines[i].strip()]
+    tails = []                               # longest increasing subsequence, patience sorting
+    for i in order:
+        k = bisect_left(tails, i)
+        tails[k:k + 1] = [i]
+    return len(order) - len(tails)
+
+
+
+def move_ner(ner, raw, new_line):
+    """The NER offsets of the raw text moved with their lines (an entity over two lines that are no longer
+    together loses its offsets: it is then found by its text)."""
+    if not ner:
+        return ner
+    starts = [0]
+    for line in raw.split("\n"):
+        starts.append(starts[-1] + len(line) + 1)
+    lengths = [starts[i + 1] - starts[i] - 1 for i in range(len(starts) - 1)]
+    new_starts = [0] * len(lengths)
+    position = 0
+    for old in sorted(new_line, key=new_line.get):
+        new_starts[old] = position
+        position += lengths[old] + 1
+    out = dict(ner)
+    for key in ("arabic_ner", "french_ner"):
+        items = []
+        for item in ner.get(key) or []:
+            item = dict(item)
+            start, end = item.get("start"), item.get("end")
+            if isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(raw):
+                line = bisect_left(starts, start + 1) - 1
+                last = bisect_left(starts, end) - 1
+                if line == last or all(new_line[k + 1] == new_line[k] + 1 for k in range(line, last)):
+                    shift = new_starts[line] - starts[line]
+                    item["start"], item["end"] = start + shift, end + shift
+                else:
+                    item.pop("start"), item.pop("end")
+            items.append(item)
+        out[key] = items
+    return out
+
+
 # 1. parse the raw txt into a json format
 def parse_with_notes(raw_text, ner=None):
     """raw text + NER json (or None) -> (parsed JSON object, notes about what the NER changed)."""
     notes = []
+    # the lines in the order of the form (the NER offsets move with them)
+    ordered, moved, new_line = restore_order(raw_text)
+    if moved:
+        notes.append(f"{moved} line(s) were not in the order of the form: read in that order")
+        ner = move_ner(ner, raw_text, new_line)
+        raw_text = ordered
     # copy the json template
     parsed = copy.deepcopy(TEMPLATE)
     # 0. remove all punctuations and lines spaces (the position of every kept character is remembered)
@@ -712,8 +1025,8 @@ def parse_with_notes(raw_text, ner=None):
         r"و\s*الدقيقة\s*(.*?)(?=\s*(?<!\S)على\s+الساعة|\s*(?<!\S)" + BORN_VERB + r"\s|\s*(?<!\S)ال[إأا]سم|\s*$)", child
     )
     parsed["LIEUNAISS"] = extract_any([
-        r"(?<!\S)" + BORN_VERB + r"\s+" + BIRTH_PREP + r"(.*?)(?=\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
-        r"(?<!\S)" + BORN_VERB + r"\s+(.*?)(?=\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
+        r"(?<!\S)" + BORN_VERB + r"\s+" + BIRTH_PREP + r"(.*?)(?=\s*(?<!\S)(?:ذكر|[أا]نثى)(?:\s|$)|\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
+        r"(?<!\S)" + BORN_VERB + r"\s+(.*?)(?=\s*(?<!\S)(?:ذكر|[أا]نثى)(?:\s|$)|\s*(?<!\S)و\s*الدقيقة|\s*(?<!\S)ال[إأا]سم\s+الشخصي|\s*(?<!\S)PRENOM\b|\s*(?<!\S)NOM\b|\s*(?<!\S)جنسيت)",
     ], child)
     if parsed["LIEUNAISS"] in ("ب", "في"):
         parsed["LIEUNAISS"] = ""   # "ولد ب:" with nothing after it: the preposition is not a place
