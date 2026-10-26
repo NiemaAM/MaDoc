@@ -8,6 +8,7 @@ __pycache__/
 /out/
 /scripts/
 *.jpg
+!?.jpg
 *.xml
 !requirements.txt
 .gradio/
