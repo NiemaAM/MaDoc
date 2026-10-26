@@ -563,6 +563,9 @@ madoc/
 ├── dictionaries/            date_time.json, jobs.json, nationalities.json, cities.json, names.json
 ├── models/                  blla.mlmodel (segmentation), htr.mlmodel (recognition)
 ├── samples/                 anonymized transcriptions used by the tests, example scans of the Samples button
+├── logo/                    the logos: the wide one (with the name) in the top bar and on the login page,
+│                            its version for the dark theme (a name with "dark": madoc_dark.png), the square
+│                            one as the icon of the browser tab and of the installed application
 ├── tests/                   pytest suite and its documents
 ├── .github/workflows/       CI configuration
 ├── requirements.txt         full installation

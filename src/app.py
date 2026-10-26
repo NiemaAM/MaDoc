@@ -69,6 +69,100 @@ SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 
+# the logos (logo/): the one with the name (wide) in the top bar and on the login page, the square one as the icon
+# of the page (browser tab, installed application). Found by their shape, whatever their file names; a file with
+# "dark" in its name is the version for the dark theme (madoc_dark.png).
+LOGO_DIR = Path(__file__).resolve().parents[1] / "logo"
+LOGO_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".svg")
+
+
+def image_ratio(path):
+    """Width / height of an image (an SVG from its viewBox or its width / height), None when unreadable."""
+    try:
+        if path.suffix.lower() == ".svg":
+            head = path.read_text(encoding="utf-8", errors="ignore")[:4000]
+            box = re.search(r'viewBox="[\d.\-]+[\s,]+[\d.\-]+[\s,]+([\d.]+)[\s,]+([\d.]+)"', head)
+            size = box or re.search(r'<svg[^>]*?width="([\d.]+)[^"]*"[^>]*?height="([\d.]+)', head)
+            return float(size.group(1)) / float(size.group(2)) if size else None
+        with Image.open(path) as image:
+            return image.width / image.height
+    except (OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def find_logos(folder=None):
+    """{"wordmark": the logo with the name (wider than high), "wordmark_dark": its version for the dark theme,
+    "icon": the square one, "icon_dark"} -> paths (only those found)."""
+    folder = Path(folder or LOGO_DIR)
+    found = {}
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.iterdir()):
+        ratio = image_ratio(path) if path.suffix.lower() in LOGO_SUFFIXES else None
+        if ratio is None:
+            continue
+        kind = "wordmark" if ratio >= 1.6 else "icon"
+        found.setdefault(kind + ("_dark" if "dark" in path.stem.lower() else ""), path)
+    return found
+
+
+@lru_cache(maxsize=8)
+def logo_uri(path, width=800):
+    """The logo as a data: URI (it is shown on the login page, before any file of the server can be read);
+    a large raster image is made smaller first."""
+    path = Path(path)
+    if path.suffix.lower() == ".svg":
+        return "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    with Image.open(path) as image:
+        image = image.convert("RGBA")
+        if image.width > width:
+            image = image.resize((width, round(image.height * width / image.width)), Image.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, "PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def logo_images(logos):
+    """<img> of the logo with the name: the light theme's one and, when there is one, the dark theme's one (the
+    CSS shows one of them; without a dark version the light one is shown on a white box in the dark theme)."""
+    light, dark = logos.get("wordmark"), logos.get("wordmark_dark")
+    if not light:
+        light, dark = dark, None
+    if not light:
+        return ""
+    images = f'<img class="md-logo{"" if dark else " md-boxed"}" src="{logo_uri(str(light))}" alt="MaDoc"/>'
+    if dark:
+        images += f'<img class="md-logo-dark" src="{logo_uri(str(dark))}" alt="MaDoc"/>'
+    return images
+
+
+# the logo of the theme shown (gradio puts the class "dark" on the page in the dark theme); also on the login page,
+# where the CSS of the app is not loaded yet
+LOGO_CSS = """
+.md-logo-dark {display:none !important;}
+.dark .md-logo-dark {display:inline-block !important;} .dark .md-logo:not(.md-boxed) {display:none !important;}
+.dark .md-boxed {background:#fff; border-radius:6px; padding:3px 8px; box-sizing:border-box;}
+.md-login img {display:block; width:80%; max-width:340px; margin:4px auto 14px;}
+.dark .md-login .md-logo-dark {display:block !important;}
+"""
+
+
+def title_html(logos):
+    """The top bar's title: the logo with the name, or the name in letters when there is no logo."""
+    images = logo_images(logos)
+    return f'<div class="md-title">{images}</div>' if images else '<div class="md-title">MaDoc</div>'
+
+
+def login_message(logos):
+    """The login page: the logo with the name above the message."""
+    text = "MaDoc: log in with the name and password you were given."
+    images = logo_images(logos)
+    if not images:
+        return text
+    return (f'<style>{LOGO_CSS}</style><div class="md-login">{images}'
+            f'<p style="text-align:center">{html.escape(text)}</p></div>')
+
+
 def sample_images():
     """The example scans of samples/, sorted by name (1.jpg, 2.jpg ...)."""
     if not SAMPLES_DIR.is_dir():
@@ -80,6 +174,7 @@ CSS = """
 .md-bar button {min-width:7.5em !important; flex:0 0 auto !important; white-space:nowrap;}
 .md-bar .md-help button, .md-bar button.md-help {min-width:2.6em !important;}
 .md-title {text-align:right; font-weight:700; font-size:1.25em; padding-right:6px;}
+.md-title img {height:40px; width:auto; display:inline-block; vertical-align:middle;}
 .md-tools {gap:6px !important; justify-content:flex-end; flex-wrap:nowrap !important;}
 .md-files {gap:8px !important; justify-content:flex-start; flex-wrap:nowrap !important;}
 .md-files button {min-width:11em !important; flex:0 0 auto !important; white-space:nowrap;}
@@ -896,7 +991,7 @@ def file_or_none(doc, key):
 def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_model=MODEL_RECOGNITION):
     # delete_cache: gradio's copy of every upload / download is removed after KEEP_SECONDS
     with make(gr.Blocks, title="MaDoc", delete_cache=(KEEP_SECONDS, KEEP_SECONDS), fill_width=True) as app:
-        gr.HTML(f"<style>{CSS}{I18N_CSS}</style>")
+        gr.HTML(f"<style>{CSS}{LOGO_CSS}{I18N_CSS}</style>")
         doc_state, spelling_state = gr.State(None), gr.State(dict(NO_SPELLING))
         zoom_state, options_open, help_open = gr.State(1.0), gr.State(False), gr.State(False)
         samples_open, files_open = gr.State(False), gr.State(False)
@@ -911,7 +1006,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             save_button = make(gr.DownloadButton, label=I18N("save"), size="sm", scale=0, min_width=110,
                                interactive=False)
             options_button = make(gr.Button, value=I18N("options"), size="sm", scale=0, min_width=110)
-            gr.HTML('<div class="md-title">MaDoc</div>')
+            gr.HTML(title_html(find_logos()))
             help_button = make(gr.Button, value="ⓘ", size="sm", scale=0, min_width=48, elem_classes="md-help")
         with gr.Column(visible=False) as options_panel:
             with gr.Row():
@@ -1242,10 +1337,13 @@ def main():
     app = build_app(resolve_device(args.device), args.segmentation_model, args.recognition_model)
     # i18n: English, French and Arabic (Settings at the bottom of the page); pwa: MaDoc can be installed as an
     # application, which shows a notification when a processing ends in the background
+    # the square logo: icon of the browser tab and of the installed application (instead of gradio's)
+    icon = find_logos().get("icon")
     launch = {"server_name": args.host, "server_port": args.port, "share": args.share, "i18n": I18N,
-              "pwa": not args.no_pwa, "allowed_paths": [str(SAMPLES_DIR)]}
+              "pwa": not args.no_pwa, "allowed_paths": [str(SAMPLES_DIR)],
+              "favicon_path": str(icon) if icon else None}
     if auth:
-        launch.update(auth=auth, auth_message="MaDoc: log in with the name and password you were given.")
+        launch.update(auth=auth, auth_message=login_message(find_logos()))
     allowed = inspect.signature(app.launch).parameters
     app.queue().launch(**{k: v for k, v in launch.items() if k in allowed})
 

@@ -876,3 +876,49 @@ def test_app_translate_again_keeps_the_french_written_by_hand(tmp_path, monkeypa
     assert record["PRENOMMEREFR"].startswith("Salma Latin")                  # from the Arabic edited by hand
     assert record["NATIONALITEFR"] == "MAROCAINE"                              # from the dictionary again
     assert "[translation] French fields translated again" in app.console_html(doc, 0.8)
+
+# --- the logos (logo/) -------------------------------------------------------------------------------------
+def test_app_logos_found_by_their_shape(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    from PIL import Image
+    assert app.find_logos(tmp_path / "none") == {}
+    Image.new("RGBA", (400, 100), "red").save(tmp_path / "a.png")          # with the name: wide
+    Image.new("RGBA", (120, 120), "blue").save(tmp_path / "b.png")         # the icon: square
+    (tmp_path / "notes.txt").write_text("not an image")
+    logos = app.find_logos(tmp_path)
+    assert logos == {"wordmark": tmp_path / "a.png", "icon": tmp_path / "b.png"}
+    assert 'src="data:image/png;base64,' in app.title_html(logos)
+    message = app.login_message(logos)
+    assert "data:image/png;base64," in message and "log in with the name and password" in message
+    assert app.title_html({}) == '<div class="md-title">MaDoc</div>'
+    assert "<img" not in app.login_message({})
+    assert "md-boxed" in app.title_html(logos)            # no dark version: a white box in the dark theme
+
+
+def test_app_logo_of_the_dark_theme(tmp_path):
+    pytest.importorskip("gradio")
+    import app
+    from PIL import Image
+    Image.new("RGBA", (400, 100), "red").save(tmp_path / "madoc.png")
+    Image.new("RGBA", (400, 100), "white").save(tmp_path / "madoc_dark.png")
+    Image.new("RGBA", (120, 120), "blue").save(tmp_path / "icon.png")
+    logos = app.find_logos(tmp_path)
+    assert logos == {"wordmark": tmp_path / "madoc.png", "wordmark_dark": tmp_path / "madoc_dark.png",
+                     "icon": tmp_path / "icon.png"}
+    title = app.title_html(logos)
+    assert title.count("<img") == 2 and 'class="md-logo-dark"' in title and "md-boxed" not in title
+    message = app.login_message(logos)
+    assert "<style>" in message and ".dark .md-logo-dark" in message and message.count("<img") == 2
+
+
+def test_app_large_logo_made_smaller(tmp_path):
+    pytest.importorskip("gradio")
+    import base64
+    import io
+    import app
+    from PIL import Image
+    Image.new("RGB", (2000, 540), "white").save(tmp_path / "wide.png")
+    uri = app.logo_uri(str(tmp_path / "wide.png"), 600)
+    with Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))) as image:
+        assert image.size == (600, 162)
