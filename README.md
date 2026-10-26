@@ -15,7 +15,6 @@ Every stage runs on the computer that processes the certificates. No document is
 
 ## Contents
 
-- [Live demo](#live-demo)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -30,16 +29,6 @@ Every stage runs on the computer that processes the certificates. No document is
 - [Repository layout](#repository-layout)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
-
-## Live demo
-
-A demo instance runs on the lab station while it is switched on:
-
-**https://5ea85740026fceb334.gradio.live** (login on request)
-
-The address is a temporary gradio.live link: it changes every time the server is restarted and stops working
-when the station is off. Use only anonymized or blank example certificates on the demo, since uploaded scans pass
-through gradio's relay server (see [Data protection](#data-protection)).
 
 ## How it works
 
