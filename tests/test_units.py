@@ -418,8 +418,9 @@ def test_app_history_and_files(tmp_path):
     again = app.move_in_history(back, 1, options)
     assert again["record"]["PROFESSIONPERE"] == "نجار"
     names = set(zipfile.ZipFile(again["files"]["zip"]).namelist())
-    assert names == {"scan.png", "segmentation.png", "segmentation.xml", "transcription.txt",
-                     "transcription_htr.txt", "record.json", "report.json", "report.txt"}
+    assert names == {"scan.png", "scan.xml", "scan.txt", "scan.json"}      # all named after the scan
+    assert Path(again["files"]["zip"]).name == "scan.zip"
+    assert Path(again["files"]["segmentation"]).suffix == ".xml"
 
 
 def test_app_link_off_when_the_lines_change(tmp_path):
@@ -507,7 +508,7 @@ def test_tr_writes_the_three_versions():
     assert 'class="l-en"' in html and 'class="l-fr"' in html and 'class="l-ar"' in html
     assert "[LOW CONFIDENCE] line 3: 72%" in html and "[CONFIANCE FAIBLE] ligne 3" in html and "السطر 3" in html
     assert "&lt;b&gt;" in html                                        # values are escaped
-    assert ui_text.text("save", "fr") == "💾 Enregistrer" and ui_text.text("save", "de") == "💾 Save"
+    assert ui_text.text("save", "fr") == "🖫 Enregistrer" and ui_text.text("save", "de") == "🖫 Save"
 
 
 def test_notification_script_has_every_language():
@@ -717,3 +718,39 @@ def test_app_logins():
     assert app.logins("ana:12:34, sara:abcd") == [("ana", "12:34"), ("sara", "abcd")]
     with pytest.raises(SystemExit):
         app.logins("ana")
+
+def test_app_sample_images(tmp_path, monkeypatch):
+    pytest.importorskip("gradio")
+    import app
+    folder = tmp_path / "samples"
+    folder.mkdir()
+    for name in ("2.jpg", "1.png", "1.txt", "notes.md"):
+        (folder / name).write_bytes(b"x")
+    monkeypatch.setattr(app, "SAMPLES_DIR", folder)
+    assert [Path(p).name for p in app.sample_images()] == ["1.png", "2.jpg"]   # the scans only, in order
+    monkeypatch.setattr(app, "SAMPLES_DIR", tmp_path / "none")
+    assert app.sample_images() == []                                         # no folder: no Samples button
+
+
+
+def test_app_files_are_named_after_the_scan(tmp_path):
+    """"C:/Users/.../03010108_1.jpg" -> 03010108_1.xml / .txt / .json, and the PageXML names its image by the
+    file name alone (not the path of the server)."""
+    pytest.importorskip("gradio")
+    import app
+    import zipfile
+    assert app.file_name("C:\\Users\\me\\Desktop\\03010108_1.jpg") == "03010108_1.jpg"
+    assert app.file_name("/tmp/gradio/abc/1.jpg") == "1.jpg" and app.file_name('a?b.jpg') == "a_b.jpg"
+    xml = '<PcGts><Page imageFilename="/tmp/madoc_runs/run_x/scan.jpg" imageWidth="10"/></PcGts>'
+    assert app.page_xml(xml, "1.jpg") == '<PcGts><Page imageFilename="1.jpg" imageWidth="10"/></PcGts>'
+    doc, options = app_document(tmp_path)
+    original = tmp_path / "original.jpg"
+    original.write_bytes(b"the scan as uploaded")
+    doc = dict(doc, name="C:/Users/me/1.jpg", original=str(original),
+               xml='<PcGts><Page imageFilename="C:/Users/me/1.jpg"/></PcGts>')
+    doc = app.parse_text(doc, doc["htr"], options)
+    archive = zipfile.ZipFile(doc["files"]["zip"])
+    assert sorted(archive.namelist()) == ["1.jpg", "1.json", "1.txt", "1.xml"]
+    assert archive.read("1.jpg") == b"the scan as uploaded"                       # the original, unchanged
+    assert 'imageFilename="1.jpg"' in archive.read("1.xml").decode("utf-8")
+    assert Path(doc["files"]["zip"]).name == "1.zip"

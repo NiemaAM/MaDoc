@@ -11,4 +11,9 @@ __pycache__/
 !?.jpg
 *.xml
 !requirements.txt
+<<<<<<< Updated upstream
 .gradio/
+=======
+.gradio/
+actions-runner/
+>>>>>>> Stashed changes

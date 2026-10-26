@@ -35,6 +35,7 @@ import html
 import inspect
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -44,7 +45,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import gradio as gr
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageOps
 
 from common import normalize_text, resolve_device, write_json
 from parser import find_zones, flatten
@@ -59,6 +60,16 @@ DISPLAY_MAX_SIDE = 1800   # the scan is shown at most this wide (polygons keep t
 KEEP_SECONDS = 3600       # uploads and downloads of a run are deleted after one hour
 RUNS_DIR = Path(tempfile.gettempdir()) / "madoc_runs"
 ZOOM_STEPS = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+# anonymized example scans offered in the interface (Samples), next to the transcriptions of the tests
+SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples"
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+
+
+def sample_images():
+    """The example scans of samples/, sorted by name (1.jpg, 2.jpg ...)."""
+    if not SAMPLES_DIR.is_dir():
+        return []
+    return sorted(str(p) for p in SAMPLES_DIR.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
 
 CSS = """
 .md-bar {align-items:center !important; gap:8px !important; flex-wrap:nowrap !important;}
@@ -66,6 +77,8 @@ CSS = """
 .md-bar .md-help button, .md-bar button.md-help {min-width:2.6em !important;}
 .md-title {text-align:right; font-weight:700; font-size:1.25em; padding-right:6px;}
 .md-tools {gap:6px !important; justify-content:flex-end; flex-wrap:nowrap !important;}
+.md-files {gap:8px !important; justify-content:flex-start; flex-wrap:nowrap !important;}
+.md-files button {min-width:11em !important; flex:0 0 auto !important; white-space:nowrap;}
 .md-tools button {min-width:2.6em !important; max-width:9em; flex:0 0 auto !important;}
 .md-scroll {height:62vh; overflow:auto; border:1px solid #8884; border-radius:6px; background:#fff;}
 .md-scroll svg, .md-scroll img {display:block; height:auto;}
@@ -211,21 +224,6 @@ def _encode_image(path, mtime):
         buffer = io.BytesIO()
         shown.save(buffer, "JPEG", quality=82)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"), width, height
-
-
-def draw_segmentation(image_path, lines, threshold, target):
-    """The scan with the line polygons drawn on it (the segmentation download)."""
-    with Image.open(image_path) as image:
-        image = image.convert("RGB")
-        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        for line in lines:
-            if len(line.get("polygon") or []) >= 3:
-                color = confidence_color(line.get("confidence"), threshold)
-                rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
-                draw.polygon([tuple(p) for p in line["polygon"]], fill=rgb + (50,), outline=rgb + (255,))
-        Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB").save(target)
-    return str(target)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -605,30 +603,36 @@ def parse_text(doc, text, options):
     return doc
 
 
+def file_name(name):
+    """The uploaded scan's file name, without its folder and the characters a file name cannot have."""
+    name = re.split(r"[\\/]", str(name or "scan.png"))[-1]
+    return re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip() or "scan.png"
+
+
+def page_xml(xml, image_name):
+    """The segmentation PageXML naming its image by the file name alone ("1.jpg", not the path on the server)."""
+    return re.sub(r'imageFilename="[^"]*"', f'imageFilename="{html.escape(image_name, quote=True)}"', xml)
+
+
 def write_files(doc, text):
-    """Every download of the run, and the zip of all of them (Save)."""
+    """The downloads of the run, all named after the uploaded scan ("1.jpg" -> 1.xml, 1.txt, 1.json), and the
+    zip of the four (Save): the original scan, its segmentation (PageXML), the transcription and the record."""
     keep_alive(doc)
-    folder = Path(doc["folder"])
-    write_json(doc["record"], folder / "record.json")
-    write_json(doc["report"], folder / "report.json")
-    (folder / "report.txt").write_text(format_report(doc["report"]) + "\n\n" + "\n".join(doc["notes"]) + "\n",
-                                       encoding="utf-8")
-    (folder / "transcription.txt").write_text(text, encoding="utf-8")
-    (folder / "transcription_htr.txt").write_text(doc["htr"], encoding="utf-8")
-    (folder / "segmentation.xml").write_text(doc["xml"], encoding="utf-8")
-    if not (folder / "segmentation.png").is_file():
-        draw_segmentation(doc["image"], doc["lines"], doc.get("threshold", 0.8), folder / "segmentation.png")
-    image = Path(doc["image"])
-    names = {"record.json", "report.json", "report.txt", "transcription.txt", "transcription_htr.txt",
-             "segmentation.xml", "segmentation.png"}
-    stem = Path(doc.get("name") or "scan").stem
-    with zipfile.ZipFile(folder / f"{stem}_madoc.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.write(image, image.name)
-        for name in sorted(names):
-            archive.write(folder / name, name)
-    doc["files"] = {"image": str(image), "segmentation": str(folder / "segmentation.png"),
-                    "text": str(folder / "transcription.txt"), "json": str(folder / "record.json"),
-                    "zip": str(folder / f"{stem}_madoc.zip")}
+    name = file_name(doc.get("name"))
+    stem = Path(name).stem
+    out = Path(doc["folder"]) / "download"
+    out.mkdir(exist_ok=True)
+    original = Path(doc.get("original") or doc["image"])
+    files = {"xml": out / f"{stem}.xml", "text": out / f"{stem}.txt", "json": out / f"{stem}.json"}
+    files["xml"].write_text(page_xml(doc["xml"], name), encoding="utf-8")
+    files["text"].write_text(text, encoding="utf-8")
+    write_json(doc["record"], files["json"])
+    with zipfile.ZipFile(out / f"{stem}.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(original, name)
+        for path in files.values():
+            archive.write(path, path.name)
+    doc["files"] = {"image": str(original), "segmentation": str(files["xml"]), "text": str(files["text"]),
+                    "json": str(files["json"]), "zip": str(out / f"{stem}.zip")}
 
 
 def options_of(ner, french_ner, translate, spellcheck):
@@ -716,6 +720,9 @@ def start_document(image_path, name, options, threshold, device, segmentation_mo
                    progress=None):
     """Scan -> segmentation -> recognition -> spelling -> parsing: the document state of the interface."""
     folder = new_run_folder()
+    (folder / "original").mkdir()
+    original = folder / "original" / file_name(name)
+    shutil.copyfile(image_path, original)
     image_path = prepare_image(image_path, folder)
     if progress:
         progress(0.05, desc="Segmentation (kraken blla)")
@@ -726,7 +733,8 @@ def start_document(image_path, name, options, threshold, device, segmentation_mo
     if not lines:
         raise gr.Error("No text line was recognized on this image.")
     htr = transcription(lines)
-    doc = {"folder": str(folder), "image": image_path, "name": name, "xml": xml, "lines": lines, "htr": htr,
+    doc = {"folder": str(folder), "image": image_path, "original": str(original), "name": name, "xml": xml,
+           "lines": lines, "htr": htr,
            "threshold": threshold, "log": [log_entry("c_file", name=name, count=len(lines))]}
     spelling, text = check_spelling(doc, options, progress)
     doc.update(history=[text], position=0)
@@ -778,18 +786,19 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         gr.HTML(f"<style>{CSS}{I18N_CSS}</style>")
         doc_state, spelling_state = gr.State(None), gr.State(dict(NO_SPELLING))
         zoom_state, options_open, help_open = gr.State(1.0), gr.State(False), gr.State(False)
+        samples_open, files_open = gr.State(False), gr.State(False)
         view_state = gr.State("text")   # what the Text tab shows: "text", "edit" or "spelling"
         json_raw = gr.State(False)      # the JSON tab shows the table (False) or the raw JSON (True)
 
         # top bar ------------------------------------------------------------------------------------------
         with gr.Row(elem_classes="md-bar", equal_height=True):
-            files_button = make(gr.UploadButton, label=I18N("files"), file_types=["image"], file_count="single",
-                                size="sm", scale=0, min_width=110)
-            save_button = make(gr.DownloadButton, label=I18N("save"), size="sm", scale=0, min_width=110,
+            files_button = make(gr.Button, value="🗁 files", size="sm", scale=0, min_width=110)
+            samples = sample_images()
+            save_button = make(gr.DownloadButton, label="🖫 save", size="sm", scale=0, min_width=110,
                                interactive=False)
-            options_button = make(gr.Button, value=I18N("options"), size="sm", scale=0, min_width=110)
+            options_button = make(gr.Button, value="☰ options", size="sm", scale=0, min_width=110)
             gr.HTML('<div class="md-title">MaDoc</div>')
-            help_button = make(gr.Button, value="?", size="sm", scale=0, min_width=48, elem_classes="md-help")
+            help_button = make(gr.Button, value="ⓘ", size="sm", scale=0, min_width=48, elem_classes="md-help")
         with gr.Column(visible=False) as options_panel:
             with gr.Row():
                 use_spellcheck = gr.Checkbox(True, label=I18N("opt_spellcheck"))
@@ -801,6 +810,18 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 rerun = make(gr.Button, value=I18N("rerun"), size="sm")
         with gr.Column(visible=False) as help_panel:
             gr.Markdown(I18N("help"))
+        with gr.Column(visible=False) as files_panel:
+            with gr.Row(elem_classes="md-files", equal_height=True):
+                import_button = make(gr.UploadButton, label="🗎 import", file_types=["image"],
+                                     file_count="single", size="sm", scale=0, min_width=150)
+                samples_button = make(gr.Button, value="🗍 choose_samples", size="sm", scale=0, min_width=150,
+                                      visible=bool(samples))
+        with gr.Column(visible=False) as samples_panel:
+            gr.Markdown(I18N("samples_hint"))
+            samples_view = make(gr.Gallery, value=[(path, Path(path).stem) for path in samples], show_label=False,
+                                columns=max(len(samples), 1), rows=1, height=230, object_fit="contain",
+                                allow_preview=False, show_download_button=False, show_share_button=False,
+                                interactive=False)
 
         # left: image / segmentation, right: text / json ---------------------------------------------------
         with gr.Row(equal_height=False):
@@ -810,13 +831,13 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                         with gr.Row(elem_classes="md-tools"):
                             zoom_out_1 = make(gr.Button, value="−", size="sm")
                             zoom_in_1 = make(gr.Button, value="+", size="sm")
-                            download_image = make(gr.DownloadButton, label=I18N("dl_image"), size="sm", interactive=False)
+                            download_image = make(gr.DownloadButton, label="🖫", size="sm", interactive=False)
                         image_view = gr.HTML(image_html(None, 1.0))
                     with gr.Tab(I18N("tab_segmentation")):
                         with gr.Row(elem_classes="md-tools"):
                             zoom_out_2 = make(gr.Button, value="−", size="sm")
                             zoom_in_2 = make(gr.Button, value="+", size="sm")
-                            download_segmentation = make(gr.DownloadButton, label=I18N("dl_segmentation"), size="sm",
+                            download_segmentation = make(gr.DownloadButton, label="🖫", size="sm",
                                                          interactive=False)
                         segmentation_view = gr.HTML(segmentation_html(None, 1.0, 0.8))
             with gr.Column(scale=1, min_width=360):
@@ -825,9 +846,9 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                         with gr.Row(elem_classes="md-tools"):
                             undo = make(gr.Button, value="↶", size="sm")
                             redo = make(gr.Button, value="↷", size="sm")
-                            spelling_button = make(gr.Button, value="S", size="sm")
-                            edit_button = make(gr.Button, value="E", size="sm")
-                            download_text = make(gr.DownloadButton, label=I18N("dl_txt"), size="sm", interactive=False)
+                            spelling_button = make(gr.Button, value="℁", size="sm")
+                            edit_button = make(gr.Button, value="🖉", size="sm")
+                            download_text = make(gr.DownloadButton, label="🖫", size="sm", interactive=False, tooltip="Download Text")
                         text_view = gr.HTML(text_html(None, 0.8))
                         text_edit = make(gr.Textbox, show_label=False, lines=24, max_lines=40, rtl=True,
                                          visible=False, interactive=True)
@@ -843,7 +864,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                     with gr.Tab(I18N("tab_json")):
                         with gr.Row(elem_classes="md-tools"):
                             json_mode = make(gr.Button, value=I18N("raw"), size="sm")
-                            download_json = make(gr.DownloadButton, label=I18N("dl_json"), size="sm", interactive=False)
+                            download_json = make(gr.DownloadButton, label="🖫", size="sm", interactive=False)
                         table_view = gr.HTML(record_html(None))
                         json_view = gr.JSON(visible=False)
         console = gr.HTML(console_html(None, 0.8))
@@ -869,7 +890,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             """Which content the Text tab shows: the lines, the editor or the spelling review."""
             return [view, gr.update(visible=view == "text"), gr.update(visible=view == "edit"),
                     gr.update(visible=view == "spelling"),
-                    gr.update(value=I18N("done") if view == "edit" else "E", variant="primary" if view == "edit" else "secondary"),
+                    gr.update(value=I18N("done") if view == "edit" else "🖉", variant="primary" if view == "edit" else "secondary"),
                     gr.update(variant="primary" if view == "spelling" else "secondary")]
 
         option_inputs = [use_ner, use_french_ner, use_translate, use_spellcheck]
@@ -884,11 +905,37 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             doc, spelling = start_document(path, Path(path).name, options, limit, device, segmentation_model,
                                            recognition_model, progress)
             review = spelling_review(spelling)
-            return [doc, *review, *render(doc, zoom, limit), *mode("text")]
+            return [doc, *review, *render(doc, zoom, limit), *mode("text"), *closed_files()]
 
-        files_button.click(None, None, None, js=PERMISSION_JS)
-        files_button.upload(on_upload, [files_button, *option_inputs, threshold, zoom_state],
-                            [doc_state, *review_outputs, *panels, *modes]).then(None, None, None, js=notification_js())
+        def on_sample(ner, french_ner, translate, spellcheck, limit, zoom, evt: gr.SelectData,
+                      progress=gr.Progress()):
+            """A click on an example scan: processed like an upload (a copy of it goes to the run's folder)."""
+            index = evt.index if isinstance(evt.index, int) else (evt.index or [0])[0]
+            if not 0 <= index < len(samples):
+                raise gr.Error("Choose a sample.")
+            path = samples[index]
+            options = options_of(ner, french_ner, translate, spellcheck)
+            doc, spelling = start_document(path, Path(path).name, options, limit, device, segmentation_model,
+                                           recognition_model, progress)
+            return [doc, *spelling_review(spelling), *render(doc, zoom, limit), *mode("text"), *closed_files()]
+
+        def closed_files():
+            """After a scan is chosen: the Files choices and the samples are closed."""
+            return [False, gr.update(visible=False), False, gr.update(visible=False)]
+
+        files_outputs = [files_open, files_panel, samples_open, samples_panel]
+        # Files: two choices, Import (a scan of this computer) and Choose from samples (the example scans)
+        files_button.click(lambda is_open, shown: [not is_open, gr.update(visible=not is_open),
+                                                   shown and not is_open, gr.update(visible=shown and not is_open)],
+                           [files_open, samples_open], files_outputs).then(None, None, None, js=PERMISSION_JS)
+        samples_button.click(lambda is_open: [not is_open, gr.update(visible=not is_open)],
+                             [samples_open], [samples_open, samples_panel])
+        samples_view.select(on_sample, [*option_inputs, threshold, zoom_state],
+                            [doc_state, *review_outputs, *panels, *modes, *files_outputs]
+                            ).then(None, None, None, js=notification_js())
+        import_button.upload(on_upload, [import_button, *option_inputs, threshold, zoom_state],
+                             [doc_state, *review_outputs, *panels, *modes, *files_outputs]
+                             ).then(None, None, None, js=notification_js())
 
         def on_rerun(doc, ner, french_ner, translate, spellcheck, limit, zoom, progress=gr.Progress()):
             if not doc:
@@ -1023,7 +1070,7 @@ def main():
     # i18n: English, French and Arabic (Settings at the bottom of the page); pwa: MaDoc can be installed as an
     # application, which shows a notification when a processing ends in the background
     launch = {"server_name": args.host, "server_port": args.port, "share": args.share, "i18n": I18N,
-              "pwa": not args.no_pwa}
+              "pwa": not args.no_pwa, "allowed_paths": [str(SAMPLES_DIR)]}
     if auth:
         launch.update(auth=auth, auth_message="MaDoc: log in with the name and password you were given.")
     allowed = inspect.signature(app.launch).parameters

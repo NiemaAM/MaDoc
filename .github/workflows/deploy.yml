@@ -1,0 +1,25 @@
+name: deploy
+on:
+  push:
+    branches: [master]
+concurrency: deploy
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, DIL2]
+    steps:
+      - name: Update the code
+        run: |
+          cd ~/Documents/MaDoc
+          git fetch origin master
+          git merge --ff-only origin/master
+      - name: Install the requirements
+        run: ~/Documents/MaDoc/.venv/bin/pip install -r ~/Documents/MaDoc/requirements.txt
+      - name: Tests
+        run: cd ~/Documents/MaDoc && .venv/bin/python -m pytest -q
+      - name: Restart the app
+        run: |
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          systemctl --user restart madoc
+      - name: Check it answers
+        run: curl -fsS --retry 15 --retry-delay 4 --retry-all-errors http://127.0.0.1:7860/ > /dev/null

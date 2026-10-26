@@ -67,7 +67,7 @@ makes it easy to see which stage introduced a problem.
 |---|---|
 | Segmentation | kraken `blla` baseline segmentation |
 | Recognition | kraken HTR model, then Unicode bidi reordering |
-| Spelling correction | a local model through Ollama (`qwen2.5:7b` by default), filtered by dictionary rules and checks of the whole certificate |
+| Spelling correction | a local model through Ollama (`gemma3:12b` by default), filtered by dictionary rules and checks of the whole certificate |
 | Named entities | `TypicaAI/MagBERT-NER-AR` (Arabic) and `TypicaAI/magbert-ner` (French), with transformers |
 | Parsing | regular expressions on the fixed labels of the form, checked against the entities |
 | Conversion and mapping | dictionary lookups |
@@ -111,7 +111,7 @@ Once both are ready, `HF_HUB_OFFLINE=1` in `.env` makes sure nothing is download
 **Local language model.** Install Ollama, then download the model once:
 
 ```bash
-ollama pull qwen2.5:7b
+ollama pull gemma3:12b
 ```
 
 The same model is used for the spelling correction and for the translation. Another model can be chosen in
@@ -138,7 +138,7 @@ which is read by every tool (it is listed in `.gitignore`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MADOC_SPELL_MODEL` | `qwen2.5:7b` | Ollama model used by the spelling checker. |
+| `MADOC_SPELL_MODEL` | `gemma3:12b` | Ollama model used by the spelling checker. |
 | `MADOC_TRANSLATE_MODEL` | the value of `MADOC_SPELL_MODEL` | Ollama model used for the translation. |
 | `MADOC_OLLAMA_URL` | `http://127.0.0.1:11434` | Address of Ollama (spelling and translation). Only this computer is accepted. |
 | `MADOC_SPELL_ALLOW_REMOTE` | not set | Set to `1` to allow an Ollama server elsewhere on your own network. |
@@ -175,11 +175,11 @@ The screen is split in two, with a menu bar on top and a console at the bottom.
 
 | Control | What it does |
 |---|---|
-| **Files** | Imports a scan (jpg, png, tif). It is processed at once: segmentation, recognition, spelling check, parsing, translation and validation. Phone photos are turned upright from their EXIF orientation first. |
-| **Save** | Downloads a zip with the scan, the segmentation (PageXML and an image with the polygons), the transcription as read by the HTR and as corrected, the record and the validation report. |
+| **Files** | Two choices. **Import** a scan of your computer (jpg, png, tif), or **Choose from samples** one of the example scans of `samples/` (hidden when the folder has no image). The scan is processed at once: segmentation, recognition, spelling check, parsing, translation and validation. Phone photos are turned upright from their EXIF orientation first. |
+| **Save** | Downloads a zip of four files, all named after the scan: the original scan, its segmentation as PageXML, the transcription and the record (`1.jpg`, `1.xml`, `1.txt`, `1.json` in `1.zip`). The PageXML names its image by the file name alone (`imageFilename="1.jpg"`), not by its path on the server. |
 | **Options** | Spelling correction, Arabic NER, French NER, translation and the confidence threshold. **Run again with these options** processes the scan again from the HTR transcription; the previous versions of the text stay in the history. |
 | **?** | A short help. |
-| **Image / Segmentation** | The scan, and the scan with the polygon of every detected line coloured by the recognition confidence (green, amber, red under the threshold). **+ / −** zoom, scroll to move, **⤓** downloads the image. |
+| **Image / Segmentation** | The scan, and the scan with the polygon of every detected line coloured by the recognition confidence (green, amber, red under the threshold). **+ / −** zoom, scroll to move. **⤓** downloads the scan in the Image tab, the PageXML in the Segmentation tab. |
 | **Text** | The transcription, one numbered line per text line with its confidence. **↶ / ↷** undo and redo every change of the text. **S** shows the spelling review. **E** opens the text for editing; pressing it again checks the spelling of the edited text and parses it again. **⤓** downloads the text. |
 | **JSON** | The record as a table, one row per field with the Arabic and the French value; rows with a validation issue are coloured red (error) or amber (warning), and their tooltip gives the message. **{ } raw** switches to the raw JSON, **⤓** downloads it. |
 | **Console** | The validation summary and issues, the lines under the confidence threshold, then the spelling and parser notes and the log of the run. |
@@ -573,7 +573,7 @@ madoc/
 │   └── common.py            settings (.env), dictionaries, record template, Arabic normalisation, helpers
 ├── dictionaries/            date_time.json, jobs.json, nationalities.json, cities.json, names.json
 ├── models/                  blla.mlmodel (segmentation), htr.mlmodel (recognition)
-├── samples/                 anonymized transcriptions used by the tests
+├── samples/                 anonymized transcriptions used by the tests, example scans of the Samples button
 ├── tests/                   pytest suite and its documents
 ├── .github/workflows/       CI configuration
 ├── requirements.txt         full installation

@@ -15,20 +15,25 @@ LANGUAGES = ("en", "fr", "ar")
 # key -> (English, French, Arabic)
 TEXT = {
     # top bar, tabs, toolbars
-    "files": ("📂 Files", "📂 Fichiers", "📂 ملفات"),
-    "save": ("💾 Save", "💾 Enregistrer", "💾 حفظ"),
-    "options": ("⚙ Options", "⚙ Options", "⚙ خيارات"),
+    "files": ("🗁 Files", "🗁 Fichiers", "🗁 ملفات"),
+    "import": ("🗎 Import", "🗎 Importer", "🗎 استيراد"),
+    "choose_samples": ("🗍 Choose from samples", "🗍 Choisir un exemple", "🗍 اختيار نموذج"),
+    "samples_hint": ("Anonymized example certificates: click one to process it.",
+                     "Actes anonymisés d'exemple : cliquez sur l'un d'eux pour le traiter.",
+                     "رسوم مجهولة الهوية للتجربة: انقر على أحدها لمعالجته."),
+    "save": ("🖫 Save", "🖫 Enregistrer", "🖫 حفظ"),
+    "options": ("☰ Options", "☰ Options", "☰ خيارات"),
     "tab_image": ("Image", "Image", "الصورة"),
     "tab_segmentation": ("Segmentation", "Segmentation", "التجزئة"),
     "tab_text": ("Text", "Texte", "النص"),
     "tab_json": ("JSON", "JSON", "JSON"),
-    "dl_image": ("⤓ image", "⤓ image", "⤓ الصورة"),
-    "dl_segmentation": ("⤓ segmentation", "⤓ segmentation", "⤓ التجزئة"),
-    "dl_txt": ("⤓ txt", "⤓ txt", "⤓ txt"),
-    "dl_json": ("⤓ json", "⤓ json", "⤓ json"),
-    "edit": ("E", "E", "E"),
+    "dl_image": ("🖫", "🖫", "🖫"),
+    "dl_segmentation": ("🖫", "🖫", "🖫"),
+    "dl_txt": ("🖫", "🖫", "🖫"),
+    "dl_json": ("🖫", "🖫", "🖫"),
+    "edit": ("🖉", "🖉", "🖉"),
     "done": ("✓ done", "✓ terminé", "✓ تم"),
-    "spelling": ("S", "S", "S"),
+    "spelling": ("℁", "℁", "℁"),
     "raw": ("{ } raw", "{ } brut", "{ } خام"),
     "table": ("▦ table", "▦ tableau", "▦ جدول"),
     # options
@@ -124,17 +129,18 @@ HELP = {
     "en": """
 **MaDoc** reads a scanned Moroccan birth certificate and builds its record.
 
-1. **Files**: import a scan (jpg, png, tif). It is segmented, transcribed and parsed at once.
+1. **Files**: **Import** a scan (jpg, png, tif), or **Choose from samples** an anonymized example. It is
+   segmented, transcribed and parsed at once.
 2. **Image / Segmentation**: the scan, and the detected lines coloured by the recognition confidence
    (green sure, amber doubtful, red under the threshold). **+ / −** zoom; scroll to move.
-3. **Text**: the transcription. **↶ / ↷** undo and redo. **S** shows the spelling corrections: click a
-   highlighted word to accept or refuse it, then *Apply*. **E** edits the text by hand; press it again to
+3. **Text**: the transcription. **↶ / ↷** undo and redo. **℁** shows the spelling corrections: click a
+   highlighted word to accept or refuse it, then *Apply*. **🖉** edits the text by hand; press it again to
    finish, the record is then parsed again.
 4. **JSON**: the record, field by field (Arabic and French). Rows with a validation problem are coloured.
 5. Hover a line anywhere: the same line is highlighted on the scan, in the text and in the record.
 6. **Console** (bottom): errors (red) must be fixed, warnings (amber) should be checked.
-7. **Save**: a zip with the scan, the segmentation, both transcriptions, the record and the report.
-   Each **⤓** button downloads one of them.
+7. **Save**: a zip with the scan, its segmentation (PageXML), the transcription and the record, all named
+   after the scan (`1.jpg`, `1.xml`, `1.txt`, `1.json`). Each **🖫** button downloads one of them.
 
 Every model runs on this computer (NER, spelling and translation through Ollama): nothing is sent online.
 Files are deleted from the server after one hour. The language is chosen in Settings (bottom of the page);
@@ -143,19 +149,20 @@ MaDoc can be installed as an application and notifies you when a long processing
     "fr": """
 **MaDoc** lit un acte de naissance marocain numérisé et en construit l'enregistrement.
 
-1. **Fichiers** : importez un scan (jpg, png, tif). Il est segmenté, transcrit et analysé aussitôt.
+1. **Fichiers** : **Importer** un scan (jpg, png, tif), ou **Choisir un exemple** anonymisé. Il est segmenté,
+   transcrit et analysé aussitôt.
 2. **Image / Segmentation** : le scan, et les lignes détectées colorées selon la confiance de la
    reconnaissance (vert sûr, orange douteux, rouge sous le seuil). **+ / −** zoom ; défilez pour vous déplacer.
-3. **Texte** : la transcription. **↶ / ↷** annuler et rétablir. **S** affiche les corrections orthographiques :
-   cliquez sur un mot surligné pour l'accepter ou le refuser, puis *Appliquer*. **E** permet de corriger le
+3. **Texte** : la transcription. **↶ / ↷** annuler et rétablir. **℁** affiche les corrections orthographiques :
+   cliquez sur un mot surligné pour l'accepter ou le refuser, puis *Appliquer*. **🖉** permet de corriger le
    texte à la main ; appuyez à nouveau pour terminer, l'enregistrement est alors recalculé.
 4. **JSON** : l'enregistrement, champ par champ (arabe et français). Les lignes ayant un problème de
    validation sont colorées.
 5. Survolez une ligne n'importe où : la même ligne est mise en évidence sur le scan, dans le texte et dans
    l'enregistrement.
 6. **Console** (en bas) : les erreurs (rouge) doivent être corrigées, les avertissements (orange) vérifiés.
-7. **Enregistrer** : un zip avec le scan, la segmentation, les deux transcriptions, l'enregistrement et le
-   rapport. Chaque bouton **⤓** télécharge l'un d'eux.
+7. **Enregistrer** : un zip avec le scan, sa segmentation (PageXML), la transcription et l'enregistrement,
+   tous nommés comme le scan (`1.jpg`, `1.xml`, `1.txt`, `1.json`). Chaque bouton **🖫** télécharge l'un d'eux.
 
 Tous les modèles tournent sur cet ordinateur (NER, orthographe et traduction avec Ollama) : rien n'est
 envoyé en ligne. Les fichiers sont supprimés du serveur après une heure. La langue se choisit dans Paramètres (bas
@@ -164,15 +171,17 @@ de la page) ; MaDoc peut être installé comme application et vous prévient à 
     "ar": """
 **MaDoc** يقرأ رسم ولادة مغربي ممسوحا ضوئيا ويستخرج سجله.
 
-1. **ملفات**: استورد وثيقة ممسوحة (jpg، png، tif). تتم تجزئتها واستخراج نصها وتحليلها مباشرة.
+1. **ملفات**: **استيراد** وثيقة ممسوحة (jpg، png، tif)، أو **اختيار نموذج** مجهول الهوية. تتم تجزئتها واستخراج نصها
+   وتحليلها مباشرة.
 2. **الصورة / التجزئة**: الوثيقة، والأسطر المكتشفة ملونة حسب ثقة التعرف (الأخضر مؤكد، البرتقالي مشكوك فيه،
    الأحمر تحت العتبة). **+ / −** للتكبير والتصغير؛ مرر للتنقل.
-3. **النص**: النص المستخرج. **↶ / ↷** تراجع وإعادة. **S** يعرض التصحيحات الإملائية: انقر على كلمة مميزة
-   لقبولها أو رفضها، ثم *تطبيق*. **E** لتحرير النص يدويا؛ اضغط مرة أخرى للإنهاء فيعاد تحليل السجل.
+3. **النص**: النص المستخرج. **↶ / ↷** تراجع وإعادة. **℁** يعرض التصحيحات الإملائية: انقر على كلمة مميزة
+   لقبولها أو رفضها، ثم *تطبيق*. **🖉** لتحرير النص يدويا؛ اضغط مرة أخرى للإنهاء فيعاد تحليل السجل.
 4. **JSON**: السجل حقلا حقلا (بالعربية والفرنسية). الصفوف التي بها مشكلة في التحقق ملونة.
 5. مرر المؤشر فوق أي سطر: يظهر السطر نفسه على الوثيقة وفي النص وفي السجل.
 6. **وحدة التحكم** (أسفل الصفحة): يجب تصحيح الأخطاء (بالأحمر) والتحقق من التنبيهات (بالبرتقالي).
-7. **حفظ**: ملف zip يضم الوثيقة والتجزئة والنصين والسجل والتقرير. كل زر **⤓** يحمّل واحدا منها.
+7. **حفظ**: ملف zip يضم الوثيقة وتجزئتها (PageXML) والنص والسجل، كلها باسم الوثيقة
+   (`1.jpg` و`1.xml` و`1.txt` و`1.json`). كل زر **🖫** يحمّل واحدا منها.
 
 كل النماذج تعمل على هذا الحاسوب (التعرف على الكيانات والإملاء والترجمة عبر Ollama): لا يرسل أي شيء عبر الإنترنت.
 تحذف الملفات من الخادم بعد ساعة. تُختار اللغة من الإعدادات (أسفل الصفحة)؛ يمكن تثبيت MaDoc كتطبيق
