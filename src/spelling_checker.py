@@ -1915,6 +1915,40 @@ def address_numbers(lines, start_words, stop_words):
     return numbers
 
 
+def address_names(lines, start_words, stop_words):
+    """{street label: (name words, line, start, end)} of the first address after one of start_words: the name
+    written after "حي" / "تجزئة" / "زنقة" ... ("بتجزئة الفتح", "ب تجزئة الفيقة"), up to a number label, a
+    digit, another label or a known place."""
+    names, inside = {}, False
+    places = get_places()
+    for line_index, line in enumerate(lines):
+        units = line_units(line)
+        for k, unit in enumerate(units):
+            key = ar_key(unit["text"])
+            if not inside:
+                inside = key in start_words
+                continue
+            if key in stop_words or (names and key in start_words):
+                return names
+            label = label_key(unit["text"])
+            if label not in STREET_LABELS or label in names:
+                continue
+            end = k + 1
+            while end < len(units) and end - k <= 3:
+                word = units[end]["text"]
+                word_key = ar_key(word)
+                if (DIGIT_OR_LATIN.search(word) or not ARABIC_WORD.search(word) or label_key(word) in STREET_LABELS
+                        or any(edit_distance(word_key, l) <= 1 for l in ADDRESS_NUMBER_LABELS if len(word_key) >= 3)
+                        or label_kind(surface(word)) or word_key in places):
+                    break
+                end += 1
+            if end > k + 1:
+                names[label] = ([u["text"] for u in units[k + 1:end]], line_index, k + 1, end)
+        if inside and names and any(ar_key(u["text"]) in ("بناء", "بناءا") for u in units):
+            return names
+    return names
+
+
 def address_flags(lines, changes):
     """The parents' address and the declarant's address: the same street / house number twice. A number
     that differs ("الزنقة 11" / "الزنقة 12") is flagged on both (digits are never corrected: the scan tells
@@ -1924,11 +1958,11 @@ def address_flags(lines, changes):
     stop = {ar_key(w) for w in ("بناءا", "بناء", "وحرر", "حرر", "تحت")}
     parents = address_numbers(lines, {ar_key("الساكنان")}, stop | {ar_key("الساكن")})
     declaration_lines = next((i for i, l in enumerate(lines) if re.search(r"بناء", l)), None)
-    if not parents or declaration_lines is None:
+    if declaration_lines is None:
         return []
     declarant = address_numbers(lines[declaration_lines:], {ar_key("الساكن"), ar_key("الساكنة")},
                                 {ar_key("وحرر"), ar_key("حرر")})
-    flags = []
+    flags = street_name_flags(lines, changes, declaration_lines, stop)
     for label, (number, line_index, k) in parents.items():
         other = declarant.get(label)
         if not other or other[0] == number:
@@ -1943,6 +1977,48 @@ def address_flags(lines, changes):
                           "context": "the number of the other address",
                           "reason": f"the same address gives {against} on another line: click to use it"})
     return flags
+
+
+def street_name_flags(lines, changes, declaration_lines, stop):
+    """The name of the street / neighbourhood in the parents' address and in the declarant's ("بتجزئة الفتح" /
+    "ب تجزئة الفيقة"): the same place, read twice. The reading listed in spelling_words.txt, or written elsewhere
+    in the certificate, is applied to the other one; otherwise each gets the other reading in orange (a click
+    applies it: two readings alone cannot tell which one is right)."""
+    parents = address_names(lines, {ar_key("الساكنان")}, stop | {ar_key("الساكن")})
+    declarant = address_names(lines[declaration_lines:], {ar_key("الساكن"), ar_key("الساكنة")},
+                              {ar_key("وحرر"), ar_key("حرر")})
+    known = user_words()
+    written = document_words(lines)
+    out = []
+    for label, (words, line, start, end) in parents.items():
+        if label not in declarant:
+            continue
+        other_words, other_line, other_start, other_end = declarant[label]
+        other_line += declaration_lines
+        a, b = " ".join(words), " ".join(other_words)
+        if unit_key(a) == unit_key(b) or SequenceMatcher(None, unit_key(a), unit_key(b)).ratio() < 0.5:
+            continue   # the same name, or two different places (not a misreading)
+        sides = [(words, line, start, end, other_words), (other_words, other_line, other_start, other_end, words)]
+
+        def trusted(side_words, at_line, at_start):
+            """A reading the person listed, or written elsewhere in the certificate (another line)."""
+            if all(surface(w) in known for w in side_words):
+                return True
+            first = written.get(unit_key(side_words[0]), [])
+            return any(l not in (line, other_line) for l, _ in first)
+
+        trust = [trusted(s[0], s[1], s[2]) for s in sides]
+        for n, (old, at_line, at_start, at_end, new) in enumerate(sides):
+            if trust[n] or any(covered(changes, at_line, k) for k in range(at_start, at_end)):
+                continue
+            applied = trust[1 - n]
+            out.append({"line": at_line, "start": at_start, "end": at_end, "old": old, "new": new,
+                        "accepted": applied, "check": not applied, "source": "address",
+                        "context": "the name of the other address" + (
+                            " (listed in spelling_words.txt or written elsewhere)" if applied else ""),
+                        "reason": "" if applied else
+                                  f"the same address gives {' '.join(new)} on another line: click to use it"})
+    return out
 
 
 # labels that the HTR sometimes glues to the previous word ("العربجننسيته" = "العربي" + "جنسيته")

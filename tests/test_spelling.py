@@ -891,7 +891,8 @@ def test_an_empty_minute_and_the_address(monkeypatch):
     assert [i["level"] for i in issues if i["field"] == "MINNAISS"] == ["warning"]
     changes, _ = sc.propose(EMPTY_MINUTE_DOCUMENT)
     by_old = {" ".join(c["old"]): c for c in changes}
-    assert "القاومة" not in by_old                                     # a neighbourhood, not "القروية"
+    # a neighbourhood, not "القروية": only the reading of the other address is offered, in orange
+    assert by_old["القاومة"]["check"] and by_old["القاومة"]["new"] == ["المعاومة"]
     assert by_old["العمرانيبست"]["new"] == ["العمراني", "بنت"] and by_old["العمرانيبست"]["accepted"]
     assert by_old["19"]["check"] and by_old["19"]["new"] == ["1"]         # the address after the mother's job
     record, _ = sc.record_of(sc.apply_changes(EMPTY_MINUTE_DOCUMENT, changes))
@@ -917,3 +918,24 @@ def test_only_new_lines_go_to_the_model(ollama):
     sent = json.loads(ollama.requests[-1]["messages"][1]["content"])["lines"]
     assert first > 5 and len(sent) == 1 and "المعدلان" in sent[0]["text"]
     assert any(c["old"] == ["موفق"] and c["accepted"] for c in changes)   # the cached answers still count
+
+def test_the_street_name_of_both_addresses(monkeypatch):
+    """samples/6.txt: "الساكنان بتجزئة الفتح" / "الساكن بتجزئة الفيق" (the same place read twice): each reading
+    gets the other one in orange; the reading listed in spelling_words.txt is applied to the other one."""
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    text = sample(6).replace("الساكن بتجزئة الفيق", "الساكن ب تجزئة الفيقة")   # the label cut from "ب"
+    changes, _ = sc.propose(text)
+    by_old = {" ".join(c["old"]): c for c in changes if c.get("source") == "address"}
+    assert by_old["الفتح"]["check"] and by_old["الفتح"]["new"] == ["الفيقة"] and not by_old["الفتح"]["accepted"]
+    assert by_old["الفيقة"]["check"] and by_old["الفيقة"]["new"] == ["الفتح"]
+    monkeypatch.setattr(sc, "user_words", lambda: frozenset({"الفتح"}))
+    changes, _ = sc.propose(text)
+    [fix] = [c for c in changes if c.get("source") == "address"]
+    assert fix["old"] == ["الفيقة"] and fix["new"] == ["الفتح"] and fix["accepted"]
+
+
+def test_the_same_street_name_is_not_flagged(monkeypatch):
+    """"بحي الامل" / "بحي الأمل" (samples/2.txt): the same name for the parser, nothing to check."""
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
+    changes, _ = sc.propose(sample(2))
+    assert not [c for c in changes if c.get("source") == "address"]
