@@ -36,6 +36,7 @@ TEXT = {
     "spelling": ("℁", "℁", "℁"),
     "raw": ("{ } raw", "{ } brut", "{ } خام"),
     "table": ("▦ table", "▦ tableau", "▦ جدول"),
+    "translate": ("文 translate", "文 traduire", "文 ترجمة"),
     # options
     "opt_spellcheck": ("Spelling correction (local model {model}, Ollama)",
                        "Correction orthographique (modèle local {model}, Ollama)",
@@ -120,6 +121,11 @@ TEXT = {
                   "[orthographe] vérifiée à nouveau après l'édition (les mots écrits à la main ne sont pas corrigés d'office)",
                   "[إملاء] تم التحقق من جديد بعد التحرير (الكلمات المكتوبة يدويا لا تصحح تلقائيا)"),
     "c_spelling": ("[spelling] choices applied", "[orthographe] choix appliqués", "[إملاء] تم تطبيق الاختيارات"),
+    "c_record_edit": ("[record] edited by hand: {fields}", "[enregistrement] modifié à la main : {fields}",
+                      "[السجل] تم تعديله يدويا: {fields}"),
+    "c_translated": ("[translation] French fields translated again from the Arabic (local model {model})",
+                     "[traduction] champs français traduits à nouveau depuis l'arabe (modèle local {model})",
+                     "[ترجمة] أعيدت ترجمة الحقول الفرنسية من العربية (نموذج محلي {model})"),
     # notification when the processing ends (the page is in the background)
     "n_done": ("Transcription finished", "Transcription terminée", "انتهى الاستخراج"),
     "n_body": ("The record is ready for review.", "L'enregistrement est prêt à être vérifié.", "السجل جاهز للمراجعة."),
@@ -137,6 +143,9 @@ HELP = {
    highlighted word to accept or refuse it, then *Apply*. **🖉** edits the text by hand; press it again to
    finish, the record is then parsed again.
 4. **JSON**: the record, field by field (Arabic and French). Rows with a validation problem are coloured.
+   **🖉** edits the record by hand (press it again to finish: the record is checked again); a value edited by
+   hand is kept when the text is parsed again, until the text gives another value for it. **文** translates
+   the French fields again from the Arabic ones (local model; the French values edited by hand are kept).
 5. Hover a line anywhere: the same line is highlighted on the scan, in the text and in the record.
 6. **Console** (bottom): errors (red) must be fixed, warnings (amber) should be checked.
 7. **Save**: a zip with the scan, its segmentation (PageXML), the transcription and the record, all named
@@ -157,7 +166,10 @@ MaDoc can be installed as an application and notifies you when a long processing
    cliquez sur un mot surligné pour l'accepter ou le refuser, puis *Appliquer*. **🖉** permet de corriger le
    texte à la main ; appuyez à nouveau pour terminer, l'enregistrement est alors recalculé.
 4. **JSON** : l'enregistrement, champ par champ (arabe et français). Les lignes ayant un problème de
-   validation sont colorées.
+   validation sont colorées. **🖉** modifie l'enregistrement à la main (appuyez à nouveau pour terminer :
+   il est revérifié) ; une valeur modifiée à la main est gardée quand le texte est analysé à nouveau, jusqu'à
+   ce que le texte donne une autre valeur pour ce champ. **文** traduit à nouveau les champs français depuis
+   l'arabe (modèle local ; les valeurs françaises modifiées à la main sont gardées).
 5. Survolez une ligne n'importe où : la même ligne est mise en évidence sur le scan, dans le texte et dans
    l'enregistrement.
 6. **Console** (en bas) : les erreurs (rouge) doivent être corrigées, les avertissements (orange) vérifiés.
@@ -178,6 +190,9 @@ de la page) ; MaDoc peut être installé comme application et vous prévient à 
 3. **النص**: النص المستخرج. **↶ / ↷** تراجع وإعادة. **℁** يعرض التصحيحات الإملائية: انقر على كلمة مميزة
    لقبولها أو رفضها، ثم *تطبيق*. **🖉** لتحرير النص يدويا؛ اضغط مرة أخرى للإنهاء فيعاد تحليل السجل.
 4. **JSON**: السجل حقلا حقلا (بالعربية والفرنسية). الصفوف التي بها مشكلة في التحقق ملونة.
+   **🖉** لتعديل السجل يدويا (اضغط مرة أخرى للإنهاء فيعاد التحقق منه)؛ تبقى القيمة المعدلة يدويا عند إعادة
+   تحليل النص ما لم يعط النص قيمة أخرى لهذا الحقل. **文** يعيد ترجمة الحقول الفرنسية من العربية (نموذج محلي؛
+   تبقى القيم الفرنسية المعدلة يدويا).
 5. مرر المؤشر فوق أي سطر: يظهر السطر نفسه على الوثيقة وفي النص وفي السجل.
 6. **وحدة التحكم** (أسفل الصفحة): يجب تصحيح الأخطاء (بالأحمر) والتحقق من التنبيهات (بالبرتقالي).
 7. **حفظ**: ملف zip يضم الوثيقة وتجزئتها (PageXML) والنص والسجل، كلها باسم الوثيقة

@@ -808,3 +808,71 @@ def test_parser_ner_offsets_move_with_their_lines():
                           for w in words]}
     for item in record_parser.move_ner(ner, raw, new_line)["arabic_ner"]:
         assert ordered[item["start"]:item["end"]] == item["entity"]
+
+# --- the record edited by hand (JSON tab) ------------------------------------------------------------------
+def test_app_record_from_json():
+    pytest.importorskip("gradio")
+    import json
+    import app
+    record = {key: "" for key in app.TEMPLATE}
+    assert list(app.record_from_json(json.dumps(record))) == list(app.TEMPLATE)
+    for text, message in (("{", "line 1"), ("[]", "object"),
+                          (json.dumps({**record, "AGE": 3}), "unknown field(s): AGE"),
+                          (json.dumps({k: v for k, v in record.items() if k != "NOM"}), "missing field(s): NOM"),
+                          (json.dumps({**record, "NOM": ["A"]}), "NOM")):
+        with pytest.raises(ValueError, match=message.replace("(", r"\(").replace(")", r"\)")):
+            app.record_from_json(text)
+
+
+def test_app_record_edit_is_kept_until_the_text_changes_the_field(tmp_path):
+    pytest.importorskip("gradio")
+    import json
+    import app
+    doc, options = app_document(tmp_path)
+    before = doc["record"]
+    edited = {**before, "PROFESSIONPERE": "نجار", "PRENOM": "AYYOUB"}
+    doc, changed = app.edit_record(doc, before, edited, options)
+    assert changed == ["PRENOM", "PROFESSIONPERE"] and doc["record"]["PRENOM"] == "AYYOUB"
+    assert json.loads(Path(doc["files"]["json"]).read_text(encoding="utf-8"))["PRENOM"] == "AYYOUB"
+    assert "[record] edited by hand: PRENOM, PROFESSIONPERE" in app.console_html(doc, 0.8)
+    # the text is corrected elsewhere: the hand edits stay
+    doc = app.set_text(doc, APP_TEXT.replace("رسم ولادة رقم : 80", "رسم ولادة رقم : 81"), options)
+    assert doc["record"]["NUMACTE"] == "81" and doc["record"]["PRENOM"] == "AYYOUB"
+    assert doc["record"]["PROFESSIONPERE"] == "نجار"
+    # the text now reads another job: the text wins for that field only
+    doc = app.set_text(doc, APP_TEXT.replace(JOB, "حداد", 1), options)
+    assert doc["record"]["PROFESSIONPERE"] == "حداد" and doc["record"]["PRENOM"] == "AYYOUB"
+    assert set(doc["record_edits"]) == {"PRENOM"}
+    # written back to the value of the text: no longer an edit
+    doc, _ = app.edit_record(doc, doc["record"], {**doc["record"], "PRENOM": doc["auto_record"]["PRENOM"]},
+                             options)
+    assert doc["record_edits"] == {}
+
+
+def test_app_record_edit_only_takes_what_was_changed_in_the_editor(tmp_path):
+    """The record was parsed again while the editor was open: the other fields keep the new values."""
+    pytest.importorskip("gradio")
+    import app
+    doc, options = app_document(tmp_path)
+    before = doc["record"]
+    doc = app.set_text(doc, APP_TEXT.replace("رسم ولادة رقم : 80", "رسم ولادة رقم : 81"), options)
+    doc, changed = app.edit_record(doc, before, {**before, "PRENOM": "AYYOUB"}, options)
+    assert changed == ["PRENOM"] and doc["record"]["NUMACTE"] == "81"
+
+
+def test_app_translate_again_keeps_the_french_written_by_hand(tmp_path, monkeypatch):
+    pytest.importorskip("gradio")
+    import app
+    import translator
+    monkeypatch.setattr(translator, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(translator, "translate_batch",
+                        lambda items: [f"Latin{i}" for i, _ in enumerate(items)])
+    doc, options = app_document(tmp_path)
+    doc, _ = app.edit_record(doc, doc["record"], {**doc["record"], "PRENOMMEREAR": "سلمى الحجوجي",
+                                                  "LIEUNAISSFR": "Khouribga (à la main)"}, options)
+    doc = app.translate_document(doc, options)
+    record = doc["record"]
+    assert record["LIEUNAISSFR"] == "Khouribga (à la main)"                  # written by hand: kept
+    assert record["PRENOMMEREFR"].startswith("Salma Latin")                  # from the Arabic edited by hand
+    assert record["NATIONALITEFR"] == "MAROCAINE"                              # from the dictionary again
+    assert "[translation] French fields translated again" in app.console_html(doc, 0.8)

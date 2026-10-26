@@ -8,7 +8,8 @@ Layout
   left        Image / Segmentation tabs: the scan, and the scan with the polygon of every text line coloured by
               the kraken confidence; + / - zoom, a download button in each tab
   right       Text / JSON tabs. Text: the transcription, undo / redo, [S] the spelling review, [E] editing
-              (leaving the editor parses the text again). JSON: the record as a table (or raw), download
+              (leaving the editor parses the text again). JSON: the record as a table (or raw), [E] editing
+              the record by hand, [文] the French fields translated again from the Arabic ones, download
   bottom      console: validation errors and warnings, low confidence lines, spelling and parser notes
 
 Hovering a line anywhere (a polygon of the segmentation, a line of the text, a row of the JSON table) highlights
@@ -34,6 +35,7 @@ import base64
 import html
 import inspect
 import io
+import json
 import os
 import re
 import shutil
@@ -47,13 +49,15 @@ from pathlib import Path
 import gradio as gr
 from PIL import Image, ImageOps
 
-from common import normalize_text, resolve_device, write_json
+import translator
+from common import TEMPLATE, normalize_text, resolve_device, write_json
+from mapper import map_fields
 from parser import find_zones, flatten
 from pipeline import run_pipeline
 from recognition import MODEL_RECOGNITION, recognize_lines
 from segmentation import MODEL_SEGMENTATION, segment_image
 from spelling_checker import MODEL as SPELL_MODEL, apply_changes, describe, line_units, propose
-from validator import format_report
+from validator import format_report, validate
 from ui_text import CSS as I18N_CSS, PERMISSION_JS, gradio_i18n, notification_js, tr
 
 DISPLAY_MAX_SIDE = 1800   # the scan is shown at most this wide (polygons keep the original coordinates)
@@ -596,10 +600,119 @@ def parse_text(doc, text, options):
         text, use_ner=options["ner"], use_translation=options["translate"], use_french_ner=options["french_ner"],
         stages=stages,
     )
+    doc["auto_record"] = record
+    record, report, record_notes = keep_record_edits(doc, record, report, options)
     doc.update(record=record, report=report, parser_notes=[f"[parser] {n}" for n in notes],
-               field_lines=field_lines(text, stages.get("parsed")))
-    doc["notes"] = doc.get("spelling_notes", []) + doc["parser_notes"]
+               field_lines=field_lines(text, stages.get("parsed")), record_notes=record_notes)
+    doc["notes"] = doc.get("spelling_notes", []) + doc["parser_notes"] + record_notes
     write_files(doc, text)
+    return doc
+
+
+# ---------------------------------------------------------------------------------------------------------
+# the record edited by hand (JSON tab)
+# ---------------------------------------------------------------------------------------------------------
+# the French fields written from an Arabic one: by the dictionaries (mapper.py) or by the local model
+FRENCH_OF = {**translator.NAME_FIELDS, **{arabic: french for arabic, (french, _) in translator.OTHER_FIELDS.items()},
+             "NATIONALITE": "NATIONALITEFR", "NATIONALITEPERE": "NATIONALITEPEREFR",
+             "NATIONALITEMERE": "NATIONALITEMEREFR"}
+TRANSLATED = set(FRENCH_OF.values())
+
+
+def record_from_json(text, template=TEMPLATE):
+    """The JSON written in the editor -> the record (fields in the template's order); ValueError with what is
+    wrong (the JSON syntax with its line, a field unknown or missing, a value that is a list or an object)."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON: line {e.lineno}, column {e.colno}: {e.msg}") from e
+    if not isinstance(data, dict):
+        raise ValueError("JSON: the record must be an object { ... }")
+    unknown = [key for key in data if key not in template]
+    missing = [key for key in template if key not in data]
+    if unknown or missing:
+        raise ValueError("; ".join(filter(None, [
+            unknown and "unknown field(s): " + ", ".join(unknown),
+            missing and "missing field(s): " + ", ".join(missing)])))
+    wrong = [key for key, value in data.items()
+             if not (value is None or isinstance(value, (str, int, float, bool)))]
+    if wrong:
+        raise ValueError("a value must be a text or a number: " + ", ".join(wrong))
+    return {key: data[key] for key in template}
+
+
+def report_of(record, options):
+    """The validation report of a record (the French fields checked when the translation can run)."""
+    return validate(record, check_translation=options["translate"] and translator.is_available())
+
+
+def edit_record(doc, before, record, options):
+    """The record as the person wrote it in the editor. `before` is the record the editor started from: only
+    the fields changed since then are taken (the record may have been parsed again meanwhile).
+
+    Every field changed by hand is remembered with the automatic value it replaced: it is kept when the text is
+    parsed again, as long as the text gives the same automatic value (see keep_record_edits)."""
+    doc = dict(doc)
+    current = dict(doc["record"])
+    auto = doc.get("auto_record") or current
+    edits = dict(doc.get("record_edits") or {})
+    changed = [field for field in record if record[field] != before.get(field)]
+    for field in changed:
+        current[field] = record[field]
+        if record[field] == auto.get(field):
+            edits.pop(field, None)           # back to the value read in the text: no longer an edit
+        else:
+            edits[field] = {"auto": auto.get(field), "value": record[field]}
+    doc.update(record=current, record_edits=edits, report=report_of(current, options))
+    if changed:
+        doc["log"] = doc.get("log", []) + [log_entry("c_record_edit", fields=", ".join(changed))]
+    keep_alive(doc)
+    write_files(doc, doc["history"][doc["position"]])
+    return doc, changed
+
+
+def translate_record(record, keep=()):
+    """The French fields made again from the Arabic ones (dictionaries, then the local model); the fields of
+    `keep` (French values written by hand) are not touched."""
+    out = dict(record)
+    for french in TRANSLATED - set(keep):
+        out[french] = ""
+    out = translator.translate(map_fields(out))
+    out.update({field: record[field] for field in keep})
+    return out
+
+
+def keep_record_edits(doc, record, report, options):
+    """The hand edits of the record applied to a record just parsed -> (record, report, notes).
+
+    An edit is kept while the text gives the value it replaced; when the text gives another one (the text was
+    corrected), the text wins and the edit is dropped. An Arabic value kept from an edit gets its French again."""
+    edits = doc.get("record_edits") or {}
+    if not edits:
+        return record, report, []
+    kept = {field: edit for field, edit in edits.items() if record.get(field) == edit["auto"]}
+    dropped = sorted(set(edits) - set(kept))
+    doc["record_edits"] = kept
+    notes = [f"[record] value read in the corrected text used instead of the hand edit: {field}" for field in dropped]
+    if not kept:
+        return record, report, notes
+    record = {**record, **{field: edit["value"] for field, edit in kept.items()}}
+    if options["translate"] and any(field in FRENCH_OF for field in kept) and translator.is_available():
+        record = translate_record(record, keep=[field for field in kept if field in TRANSLATED])
+    notes.append("[record] kept from the hand edits: " + ", ".join(sorted(kept)))
+    return record, report_of(record, options), notes
+
+
+def translate_document(doc, options):
+    """文 of the JSON tab: the French fields translated again from the Arabic of the record (with its hand
+    edits); the French values written by hand are kept."""
+    doc = dict(doc)
+    keep = [field for field in (doc.get("record_edits") or {}) if field in TRANSLATED]
+    record = translate_record(doc["record"], keep)
+    doc.update(record=record, report=validate(record, check_translation=True))
+    doc["log"] = doc.get("log", []) + [log_entry("c_translated", model=translator.MODEL)]
+    keep_alive(doc)
+    write_files(doc, doc["history"][doc["position"]])
     return doc
 
 
@@ -789,14 +902,15 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         samples_open, files_open = gr.State(False), gr.State(False)
         view_state = gr.State("text")   # what the Text tab shows: "text", "edit" or "spelling"
         json_raw = gr.State(False)      # the JSON tab shows the table (False) or the raw JSON (True)
+        json_editing = gr.State(None)   # {"folder", "record"} the JSON editor started from (None: not editing)
 
         # top bar ------------------------------------------------------------------------------------------
         with gr.Row(elem_classes="md-bar", equal_height=True):
-            files_button = make(gr.Button, value="🗁 files", size="sm", scale=0, min_width=110)
+            files_button = make(gr.Button, value=I18N("files"), size="sm", scale=0, min_width=110)
             samples = sample_images()
-            save_button = make(gr.DownloadButton, label="🖫 save", size="sm", scale=0, min_width=110,
+            save_button = make(gr.DownloadButton, label=I18N("save"), size="sm", scale=0, min_width=110,
                                interactive=False)
-            options_button = make(gr.Button, value="☰ options", size="sm", scale=0, min_width=110)
+            options_button = make(gr.Button, value=I18N("options"), size="sm", scale=0, min_width=110)
             gr.HTML('<div class="md-title">MaDoc</div>')
             help_button = make(gr.Button, value="ⓘ", size="sm", scale=0, min_width=48, elem_classes="md-help")
         with gr.Column(visible=False) as options_panel:
@@ -812,9 +926,9 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             gr.Markdown(I18N("help"))
         with gr.Column(visible=False) as files_panel:
             with gr.Row(elem_classes="md-files", equal_height=True):
-                import_button = make(gr.UploadButton, label="🗎 import", file_types=["image"],
+                import_button = make(gr.UploadButton, label=I18N("import"), file_types=["image"],
                                      file_count="single", size="sm", scale=0, min_width=150)
-                samples_button = make(gr.Button, value="🗍 choose_samples", size="sm", scale=0, min_width=150,
+                samples_button = make(gr.Button, value=I18N("choose_samples"), size="sm", scale=0, min_width=150,
                                       visible=bool(samples))
         with gr.Column(visible=False) as samples_panel:
             gr.Markdown(I18N("samples_hint"))
@@ -864,9 +978,13 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                     with gr.Tab(I18N("tab_json")):
                         with gr.Row(elem_classes="md-tools"):
                             json_mode = make(gr.Button, value=I18N("raw"), size="sm")
+                            translate_button = make(gr.Button, value="文", size="sm")
+                            json_edit_button = make(gr.Button, value="🖉", size="sm")
                             download_json = make(gr.DownloadButton, label="🖫", size="sm", interactive=False)
                         table_view = gr.HTML(record_html(None))
                         json_view = gr.JSON(visible=False)
+                        json_editor = make(gr.Code, language="json", show_label=False, lines=26, max_lines=26,
+                                           interactive=True, visible=False)
         console = gr.HTML(console_html(None, 0.8))
 
         # helpers -------------------------------------------------------------------------------------------
@@ -1029,6 +1147,61 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                     gr.update(value=I18N("table") if raw else I18N("raw"))]
 
         json_mode.click(on_json_mode, [json_raw], [json_raw, table_view, json_view, json_mode])
+
+        # the panels but the table and the raw JSON, which the JSON editor also shows / hides
+        other_panels = [p for p in panels if p is not table_view and p is not json_view]
+
+        def json_tab(doc, zoom, limit, raw, editing, editor=None):
+            """[panels but table and raw JSON] + [editor, table, raw JSON, edit button, raw/table button]: the
+            editor, or the table / the raw JSON; the edit button shows ✓ while editing."""
+            views = render(doc, zoom, limit)
+            table, record = views[3], views[4]
+            return [*(v for i, v in enumerate(views) if i not in (3, 4)),
+                    gr.update(visible=editing) if editor is None else gr.update(value=editor, visible=editing),
+                    gr.update(value=table, visible=not editing and not raw),
+                    gr.update(value=record, visible=not editing and raw),
+                    gr.update(value=I18N("done") if editing else I18N("edit"),
+                              variant="primary" if editing else "secondary"),
+                    gr.update(interactive=not editing)]
+
+        json_outputs = [*other_panels, json_editor, table_view, json_view, json_edit_button, json_mode]
+
+        def on_json_edit(doc, before, written, raw, ner, french_ner, translate, spellcheck, limit, zoom):
+            if not doc or not doc.get("record"):
+                raise gr.Error("Import a scan first.")
+            if before is None:   # start editing: the record as JSON
+                record = doc["record"]
+                return [{"folder": doc["folder"], "record": record}, doc,
+                        *json_tab(doc, zoom, limit, raw, True, json.dumps(record, ensure_ascii=False, indent=2))]
+            if before["folder"] != doc["folder"]:   # another scan was opened meanwhile: the edit was for the other
+                gr.Warning("Another scan was opened: the edit of the previous record is dropped.")
+                return [None, doc, *json_tab(doc, zoom, limit, raw, False)]
+            try:
+                record = record_from_json(written or "")
+            except ValueError as e:
+                raise gr.Error(str(e))    # the editor stays open with what was written
+            doc, _ = edit_record(doc, before["record"], record, options_of(ner, french_ner, translate, spellcheck))
+            return [None, doc, *json_tab(doc, zoom, limit, raw, False)]
+
+        json_edit_button.click(on_json_edit, [doc_state, json_editing, json_editor, json_raw, *option_inputs,
+                                              threshold, zoom_state],
+                               [json_editing, doc_state, *json_outputs])
+
+        def on_translate(doc, editing, ner, french_ner, translate, spellcheck, limit, zoom,
+                         progress=gr.Progress()):
+            if not doc or not doc.get("record"):
+                raise gr.Error("Import a scan first.")
+            if editing is not None:
+                raise gr.Error("Finish the edit of the record first (✓).")
+            reason = translator.unavailable_reason()
+            if reason:
+                raise gr.Error(f"The translation model cannot be used: {reason}")
+            progress(0.3, desc=f"Translation (local model {translator.MODEL})")
+            doc = translate_document(doc, options_of(ner, french_ner, translate, spellcheck))
+            return [doc, *render(doc, zoom, limit)]
+
+        translate_button.click(on_translate, [doc_state, json_editing, *option_inputs, threshold, zoom_state],
+                               [doc_state, *panels])
         options_button.click(lambda is_open: [not is_open, gr.update(visible=not is_open)],
                              [options_open], [options_open, options_panel])
         help_button.click(lambda is_open: [not is_open, gr.update(visible=not is_open)],
