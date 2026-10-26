@@ -11,7 +11,7 @@ converting dates and times that are written out in words, and producing the offi
 places and jobs. MaDoc handles each of these in its own stage, so every stage can be run, tested and inspected
 separately.
 
-Every stage runs on the computer that processes the certificates. No document is sent to an online service.
+Every stage runs on the computer that processes the certificates. No document is sent to an online service (DIL).
 
 ## Contents
 

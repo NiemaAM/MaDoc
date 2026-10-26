@@ -1072,7 +1072,7 @@ def main():
     launch = {"server_name": args.host, "server_port": args.port, "share": args.share, "i18n": I18N,
               "pwa": not args.no_pwa, "allowed_paths": [str(SAMPLES_DIR)]}
     if auth:
-        launch.update(auth=auth, auth_message="MaDoc: log in with the name and password you were given.")
+        launch.update(auth=auth, auth_message="MaDoc: log in with the name and password you were given. if you don't have credentials, request them to the owner of the project.")
     allowed = inspect.signature(app.launch).parameters
     app.queue().launch(**{k: v for k, v in launch.items() if k in allowed})
 
