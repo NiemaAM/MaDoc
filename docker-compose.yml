@@ -1,0 +1,62 @@
+# MaDoc on the GPU machine: the app and its Ollama (Gemma). See README: "Running with Docker".
+#   docker compose up -d --build
+name: madoc
+
+services:
+  madoc:
+    build: .
+    image: madoc:latest
+    command: ["python", "src/app.py", "--host", "0.0.0.0", "--device", "cuda:0"]
+    restart: unless-stopped
+    env_file:
+      - path: .env                        # MADOC_AUTH, HF_TOKEN, MADOC_SPELL_MODEL ... (see README: Configuration)
+        required: false
+    environment:
+      MADOC_OLLAMA_URL: http://madoc-ollama:11434
+      MADOC_SPELL_ALLOW_REMOTE: "1"       # Ollama is the container next to it, on this machine
+      HF_HOME: /cache/huggingface
+    ports:
+      - "127.0.0.1:7860:7860"             # this machine only: the public link is the Tailscale funnel
+    volumes:
+      - hf-cache:/cache/huggingface       # the NER models, downloaded once
+    depends_on:
+      madoc-ollama: {condition: service_healthy}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - {driver: nvidia, count: all, capabilities: [gpu]}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  madoc-ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}   # pin it in .env (OLLAMA_VERSION=...) once it works
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    volumes:
+      - ollama:/root/.ollama              # the models (ollama pull), kept between restarts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - {driver: nvidia, count: all, capabilities: [gpu]}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks: [default, madoc-shared]     # madoc-shared: the MLOps worker unloads Gemma before a training
+
+volumes:
+  hf-cache:
+  ollama:
+
+networks:
+  madoc-shared:
+    external: true                        # made once: docker network create madoc-shared

@@ -19,6 +19,7 @@ Every stage runs on the computer that processes the certificates. No document is
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Running with Docker](#running-with-docker)
 - [Using the web interface](#using-the-web-interface)
 - [Using the command line](#using-the-command-line)
 - [The output record](#the-output-record)
@@ -137,6 +138,45 @@ which is read by every tool (it is listed in `.gitignore`).
 | `MADOC_FRENCH_NER_SPACE` | not set | Set to `1` to fall back on the online Hugging Face Space when the local French model is missing. This sends the text online. |
 | `MADOC_AUTH` | not set | `user:password` (several separated by commas): the web interface asks for a login. |
 | `BIRTH_DICT_DIR` | `dictionaries/` | Folder containing the dictionaries, if they are kept somewhere else. |
+
+## Running with Docker
+
+On the GPU machine MaDoc runs in two containers (`docker-compose.yml`):
+
+| Container | What it runs | GPU | Reachable from |
+|---|---|---|---|
+| `madoc` | the web interface: kraken, the NER models (image built from `Dockerfile`, models included) | yes | `127.0.0.1:7860`, published by the Tailscale funnel |
+| `madoc-ollama` | Ollama with the spelling / translation model (Gemma) | yes | `madoc`, and the MLOps worker through the `madoc-shared` network (to unload Gemma before a training) |
+
+Prerequisites: the NVIDIA driver, Docker and the NVIDIA Container Toolkit on the host. The complete setup of the
+machine (MaDoc and the MLOps platform) is in the README of the MLOps repository. For MaDoc alone:
+
+```bash
+docker network create madoc-shared                   # once (shared with the MLOps platform)
+sudo systemctl disable --now ollama                  # the Ollama of the host, if any: the container replaces it
+systemctl --user disable --now madoc                 # the previous systemd service, if any
+cd ~/Documents/MaDoc
+docker compose up -d --build                         # builds the image, starts both containers
+docker compose exec madoc-ollama ollama pull gemma3:12b   # once: the model is kept in the "ollama" volume
+docker compose ps                                    # both "healthy" after a few minutes
+docker compose logs -f madoc                         # the output of the app
+```
+
+`.env` is read by the `madoc` container (`MADOC_AUTH`, `HF_TOKEN`, `MADOC_SPELL_MODEL`, …). `MADOC_OLLAMA_URL` is
+set by `docker-compose.yml` to the Ollama container. The NER models are downloaded at the first start into the
+`hf-cache` volume.
+
+**Deployment.** The `deploy` workflow (`.github/workflows/deploy.yml`) builds the image on every push to
+`master`, tags it with its commit, runs the tests inside it, restarts the containers and checks the app answers.
+To go back to a previous version without rebuilding:
+
+```bash
+docker images madoc                                  # the commits still available
+docker tag madoc:<commit> madoc:latest && docker compose up -d madoc
+```
+
+A new model reaches MaDoc as a pull request from the MLOps platform (it changes `models/*.mlmodel` and
+`models/MODEL_CARD.json`): merging it deploys the model, reverting it rolls it back.
 
 ## Using the web interface
 
@@ -567,7 +607,9 @@ madoc/
 │                            its version for the dark theme (a name with "dark": madoc_dark.png), the square
 │                            one as the icon of the browser tab and of the installed application
 ├── tests/                   pytest suite and its documents
-├── .github/workflows/       CI configuration
+├── .github/workflows/       CI (tests.yml) and deployment on the GPU machine (deploy.yml)
+├── Dockerfile               image of the app (models included)
+├── docker-compose.yml       the app and its Ollama on the GPU machine
 ├── requirements.txt         full installation
 └── requirements-ci.txt      what the tests need
 ```
