@@ -872,11 +872,28 @@ def restore_order(raw):
     groups = []          # [zone, rank, [line indexes], kind]
     group_of = {}        # line -> its group
     current = CHILD      # the furthest part reached
+    # only the labels read in the order of the form tell how far the text is: one line read far from its place
+    # (the address read among the child's lines) is moved to its part, but does not drag the lines after it there
+    anchors = in_order_lines([(i, zone) for i, (kind, zone, _) in enumerate(found)
+                              if kind is not None and kind not in SHARED and zone is not None and i not in owners])
     shared_count = {}
     top_rank = {}        # zone -> highest rank of a labeled line in it
 
     def next_kind(i):
         return next((kinds[j] for j in range(i + 1, len(lines)) if kinds[j]), None)
+
+    def free(z, i, kind, gender):
+        """Can the shared line i (a date or a nationality) go to the part z?"""
+        places = SHARED[kind]
+        if z not in places or shared_count.get((kind, z), 0) >= places[z][0]:
+            return False
+        if kind != "nationality":
+            return True
+        if (z, gender) in ((FATHER, "f"), (MOTHER, "m")):
+            return False             # "جنسيتها" is not the father's, "جنسيته" not the mother's
+        # a masculine nationality after the child's family name, just before the father's lines, is his
+        return not (z == CHILD and top_rank.get(CHILD, 0) > places[z][1]
+                    and next_kind(i) in ("father", "father born", "father job") and gender == "m")
 
     def child_nationality_late(i, gender):
         """The child's nationality read after "من والده": a boy's comes with the father's (two "جنسيته"), a
@@ -900,25 +917,13 @@ def restore_order(raw):
         if kind in SHARED:
             places = SHARED[kind]
             gender = nationality_gender(line) if kind == "nationality" else None
-
-            def free(z):
-                if z not in places or shared_count.get((kind, z), 0) >= places[z][0]:
-                    return False
-                if kind != "nationality":
-                    return True
-                if (z, gender) in ((FATHER, "f"), (MOTHER, "m")):
-                    return False             # "جنسيتها" is not the father's, "جنسيته" not the mother's
-                # a masculine nationality after the child's family name, just before the father's lines, is his
-                return not (z == CHILD and top_rank.get(CHILD, 0) > places[z][1]
-                            and next_kind(i) in ("father", "father born", "father job") and gender == "m")
-
             first = current
             # the child's nationality read after "من والده": two of them before the mother, the child has none
             if (kind == "nationality" and current == FATHER and gender and gender == sex
                     and not shared_count.get((kind, CHILD)) and not shared_count.get((kind, FATHER))
                     and child_nationality_late(i, gender)):
                 first = CHILD
-            zone = next((z for z in range(first, DECLARATION + 1) if free(z)), None)
+            zone = next((z for z in range(first, DECLARATION + 1) if free(z, i, kind, gender)), None)
             if zone is None:                 # more of them than the form has: leave it where it is
                 zone = current
                 rank = groups[-1][1] if groups else 0
@@ -927,7 +932,7 @@ def restore_order(raw):
                 rank = places[zone][1]
         elif zone is None:                   # an unlabeled first line
             zone, rank = CHILD, 0
-        if kind not in SHARED:               # only the labels of one part tell how far the text is
+        if i in anchors:                     # only the labels of one part tell how far the text is
             current = max(current, zone)
         top_rank[zone] = max(top_rank.get(zone, 0), rank)
         groups.append([zone, rank, [i], kind])
@@ -943,6 +948,27 @@ def restore_order(raw):
     order = [i for _, _, members, _ in sorted(groups, key=lambda g: (g[0], g[1])) for i in members]
     new_line = {old: new for new, old in enumerate(order)}
     return "\n".join(lines[i] for i in order), moved_count(order, lines), new_line
+
+
+def in_order_lines(lines_zones):
+    """The lines that belong to a longest run of (line, zone) whose zones never go back: the lines read in the
+    order of the form. A line left out of every such run is read far from its place.
+    [(0, CHILD), (1, ADDRESS), (2, CHILD), (3, FATHER)] -> {0, 2, 3} (the address read too early); when two
+    lines could each be the one out of place, both are kept."""
+    zones = [zone for _, zone in lines_zones]
+    n = len(zones)
+    ending = [1] * n                         # the longest run ending at i / starting at i
+    starting = [1] * n
+    for i in range(n):
+        for j in range(i):
+            if zones[j] <= zones[i]:
+                ending[i] = max(ending[i], ending[j] + 1)
+    for i in reversed(range(n)):
+        for j in range(i + 1, n):
+            if zones[i] <= zones[j]:
+                starting[i] = max(starting[i], starting[j] + 1)
+    longest = max(ending, default=0)
+    return {line for k, (line, _) in enumerate(lines_zones) if ending[k] + starting[k] - 1 == longest}
 
 
 def moved_count(order, lines):

@@ -57,7 +57,7 @@ from pipeline import run_pipeline
 from recognition import MODEL_RECOGNITION, recognize_lines
 from segmentation import MODEL_SEGMENTATION, segment_image
 from spelling_checker import MODEL as SPELL_MODEL, apply_changes, describe, line_units, propose
-from validator import format_report, validate
+from validator import validate
 from ui_text import CSS as I18N_CSS, PERMISSION_JS, gradio_i18n, notification_js, tr
 
 DISPLAY_MAX_SIDE = 1800   # the scan is shown at most this wide (polygons keep the original coordinates)
@@ -270,18 +270,36 @@ def new_run_folder():
     return Path(tempfile.mkdtemp(prefix="run_", dir=RUNS_DIR))
 
 
+def scan_to_rgb(image):
+    """The scan in 8-bit RGB. A 16-bit or 32-bit scan (TIFF from a scanner) is scaled down to 0-255 first:
+    Pillow's own conversion clips every value above 255, which turns such a scan white."""
+    if image.mode.startswith("I;16") or image.mode in ("I", "F"):
+        import numpy as np
+        values = np.asarray(image, dtype=np.float64)
+        low, high = float(values.min()), float(values.max())
+        if image.mode.startswith("I;16") and high > 255:
+            low, high = 0.0, 65535.0                 # the full range of the scanner: keep the contrast
+        scaled = (values - low) * (255.0 / (high - low)) if high > low else np.zeros_like(values)
+        image = Image.fromarray(scaled.clip(0, 255).astype(np.uint8), "L")
+    return image.convert("RGB")
+
+
 def prepare_image(image_path, folder):
     """The scan as kraken and the viewer must see it, in the folder of the run: turned upright (phone photos
     store the rotation in the EXIF data, which kraken ignores) and in a mode kraken reads; an unchanged image is
     copied as it is. The run then no longer depends on gradio's copy of the upload (deleted after an hour)."""
-    with Image.open(image_path) as image:
+    try:
+        image = Image.open(image_path)
+    except (Image.UnidentifiedImageError, Image.DecompressionBombError) as e:
+        raise gr.Error(f"This file cannot be read as a scan ({type(e).__name__}): upload a JPEG, PNG or TIFF image.")
+    with image:
         rotated = image.getexif().get(0x0112, 1) not in (None, 1)   # 0x0112 = EXIF orientation
         if not rotated and image.mode in ("RGB", "L", "1"):
             copied = Path(folder) / ("scan" + Path(image_path).suffix.lower())
             shutil.copyfile(image_path, copied)
             return str(copied)
         prepared = Path(folder) / "scan.png"
-        ImageOps.exif_transpose(image).convert("RGB").save(prepared)
+        scan_to_rgb(ImageOps.exif_transpose(image)).save(prepared)
     return str(prepared)
 
 
@@ -811,10 +829,20 @@ def translate_document(doc, options):
     return doc
 
 
+MAX_NAME_LENGTH = 120     # characters of an uploaded file name kept (the file systems allow 255 bytes)
+
+
 def file_name(name):
-    """The uploaded scan's file name, without its folder and the characters a file name cannot have."""
+    """The uploaded scan's file name, without its folder and the characters a file name cannot have ("." and
+    ".." are not names; a very long name is shortened, its extension kept)."""
     name = re.split(r"[\\/]", str(name or "scan.png"))[-1]
-    return re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip() or "scan.png"
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip()
+    if not name.strip("."):
+        return "scan.png"
+    if len(name) > MAX_NAME_LENGTH:
+        suffix = Path(name).suffix[:10]
+        name = name[:MAX_NAME_LENGTH - len(suffix)].rstrip(". ") + suffix
+    return name
 
 
 def page_xml(xml, image_name):

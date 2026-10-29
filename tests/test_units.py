@@ -363,6 +363,38 @@ def test_app_prepare_image(tmp_path):
 
 
 
+def test_app_prepare_image_16_bit_scan_and_not_an_image(tmp_path):
+    """A 16-bit TIFF keeps its grey levels (Pillow alone turns it white); a file that is no image: a message."""
+    gr = pytest.importorskip("gradio")
+    import numpy as np
+    import app
+    from PIL import Image
+    scan = tmp_path / "scan16.tif"
+    Image.fromarray(np.linspace(0, 65535, 100 * 100).reshape(100, 100).astype(np.uint16)).save(scan)
+    with Image.open(app.prepare_image(scan, tmp_path)) as image:
+        assert image.mode == "RGB" and 100 < np.asarray(image).mean() < 155
+    flat = tmp_path / "flat.tif"
+    Image.new("I", (10, 10), 7).save(flat)
+    with Image.open(app.prepare_image(flat, tmp_path)) as image:
+        assert np.asarray(image).max() == 0
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"not an image")
+    with pytest.raises(gr.Error, match="cannot be read"):
+        app.prepare_image(broken, tmp_path)
+
+
+def test_app_file_name():
+    pytest.importorskip("gradio")
+    import app
+    assert app.file_name("C:\\Users\\a\\1.JPG") == "1.JPG" and app.file_name("a/b/2.jpg") == "2.jpg"
+    for name in (None, "", "  ", ".", "..", "a/../..", "..."):
+        assert app.file_name(name) == "scan.png", name
+    long = app.file_name("x" * 300 + ".jpeg")
+    assert len(long) == app.MAX_NAME_LENGTH and long.endswith(".jpeg")
+    assert app.file_name('scan<1>?.jpg') == "scan_1__.jpg"
+
+
+
 
 def app_document(tmp_path, text=APP_TEXT):
     """A document of the interface without kraken: one polygon per line, parsed with the rules only."""
@@ -779,6 +811,32 @@ def test_parser_same_record_whatever_two_lines_are_swapped():
             assert not differ, f"samples/{number}.txt, lines {line} and {line + 1} swapped: {differ}"
 
 
+def test_parser_same_record_when_a_late_line_is_read_far_too_early():
+    """An address or declaration line read among the child's lines goes back to its part, and does not drag the
+    nationalities and dates read after it into the address."""
+    import parser as record_parser
+    from common import ar_key
+    from documents import moved, sample
+    for number in range(1, 7):
+        text = sample(number)
+        expected = record_parser.parse(text)
+        lines = text.split("\n")
+        for line in range(1, len(lines) + 1):
+            if record_parser.line_kind(lines[line - 1])[0] not in ("address", "by", "read", "written", "declaration"):
+                continue
+            for to in range(1, line - 5):
+                record = record_parser.parse(moved(text, line, to))
+                differ = [f for f in expected if f != "TEXTEDECLA" and ar_key(record[f]) != ar_key(expected[f])]
+                assert not differ, f"samples/{number}.txt, line {line} read at {to}: {differ}"
+
+
+def test_parser_in_order_lines():
+    import parser as record_parser
+    assert record_parser.in_order_lines([(0, 0), (1, 4), (2, 0), (3, 1)]) == {0, 2, 3}
+    assert record_parser.in_order_lines([(0, 0), (1, 1), (2, 0)]) == {0, 1, 2}    # either could be out of place
+    assert record_parser.in_order_lines([]) == set()
+
+
 def test_parser_dates_and_nationalities_find_their_parent():
     import parser as record_parser
     from documents import moved, sample
@@ -922,3 +980,21 @@ def test_app_large_logo_made_smaller(tmp_path):
     uri = app.logo_uri(str(tmp_path / "wide.png"), 600)
     with Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))) as image:
         assert image.size == (600, 162)
+
+# --- recognition: kraken's PageXML ---------------------------------------------------------------------------
+def test_parse_pagexml_odd_values():
+    """Scores that are not numbers and broken points are skipped, never a crash; the line score falls back to
+    the average of its characters."""
+    from recognition import parse_pagexml
+    ns = 'xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15"'
+    xml = f"""<PcGts {ns}><Page><TextRegion>
+      <TextLine id="a"><Coords points="1,2 nan,3 inf,4 5,6 x"/><Baseline points="1,1 2,2"/>
+        <TextEquiv conf="abc"><Unicode> نص </Unicode></TextEquiv>
+        <Word><TextEquiv conf="0.5"/></Word><Word><TextEquiv conf="0.7"/></Word></TextLine>
+      <TextLine id="b"><TextEquiv conf="1.5"><Unicode>x</Unicode></TextEquiv></TextLine>
+      <TextLine><TextEquiv conf="0.9"/></TextLine>
+    </TextRegion></Page></PcGts>"""
+    a, b, c = parse_pagexml(xml)
+    assert a["text"] == "نص" and a["polygon"] == [[1, 2], [5, 6]] and a["baseline"] == [[1, 1], [2, 2]]
+    assert abs(a["confidence"] - 0.6) < 1e-9
+    assert b["confidence"] is None and c["id"] == "line_3" and c["text"] == "" and c["confidence"] == 0.9

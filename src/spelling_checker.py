@@ -31,11 +31,11 @@ How "only spelling" is enforced
 """
 
 import argparse
+import http.client
 import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.request
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -768,8 +768,10 @@ def ollama_json(system, payload, model=None):
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         answer = json.loads(response.read().decode("utf-8"))
-    content = answer.get("message", {}).get("content", "")
-    result = json.loads(content)
+    message = answer.get("message") if isinstance(answer, dict) else None
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        raise ValueError("Ollama's answer has no message")
+    result = json.loads(message["content"])
     if not isinstance(result, dict):
         raise ValueError("the model did not return a JSON object")
     return result
@@ -1166,7 +1168,7 @@ def propose(text, model=None):
         proposed = ask_model_cached([lines[i] for i in positions], model)
     except PermissionError as e:
         notes.append(f"spelling model skipped: {e}")
-    except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+    except (OSError, http.client.HTTPException) as e:   # refused, reset, timed out, cut answer (URLError is one)
         notes.append(f"spelling model skipped: Ollama not reachable at {OLLAMA_URL} ({e})")
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         notes.append(f"spelling model skipped: unusable answer from the model ({e})")
@@ -1915,6 +1917,14 @@ def address_numbers(lines, start_words, stop_words):
     return numbers
 
 
+def address_reading_trusted(side_words, own_lines, known, written):
+    """A reading of an address name the person listed, or written elsewhere in the certificate (on a line that
+    is not one of the two addresses)."""
+    if all(surface(w) in known for w in side_words):
+        return True
+    return any(line not in own_lines for line, _ in written.get(unit_key(side_words[0]), []))
+
+
 def address_names(lines, start_words, stop_words):
     """{street label: (name words, line, start, end)} of the first address after one of start_words: the name
     written after "حي" / "تجزئة" / "زنقة" ... ("بتجزئة الفتح", "ب تجزئة الفيقة"), up to a number label, a
@@ -2000,14 +2010,7 @@ def street_name_flags(lines, changes, declaration_lines, stop):
             continue   # the same name, or two different places (not a misreading)
         sides = [(words, line, start, end, other_words), (other_words, other_line, other_start, other_end, words)]
 
-        def trusted(side_words, at_line, at_start):
-            """A reading the person listed, or written elsewhere in the certificate (another line)."""
-            if all(surface(w) in known for w in side_words):
-                return True
-            first = written.get(unit_key(side_words[0]), [])
-            return any(l not in (line, other_line) for l, _ in first)
-
-        trust = [trusted(s[0], s[1], s[2]) for s in sides]
+        trust = [address_reading_trusted(side[0], (line, other_line), known, written) for side in sides]
         for n, (old, at_line, at_start, at_end, new) in enumerate(sides):
             if trust[n] or any(covered(changes, at_line, k) for k in range(at_start, at_end)):
                 continue

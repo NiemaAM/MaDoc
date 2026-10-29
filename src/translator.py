@@ -60,11 +60,15 @@ def unavailable_reason():
     try:
         url = spelling_checker.ollama_url("/api/tags")
         with urllib.request.urlopen(url, timeout=CHECK_TIMEOUT) as response:
-            models = json.loads(response.read().decode("utf-8")).get("models") or []
+            tags = json.loads(response.read().decode("utf-8"))
     except PermissionError as e:
         return str(e)
     except Exception as e:
         return f"Ollama not reachable at {spelling_checker.OLLAMA_URL} ({e})"
+    models = (tags.get("models") or []) if isinstance(tags, dict) else None
+    if not isinstance(models, list):
+        return f"unexpected answer from Ollama at {spelling_checker.OLLAMA_URL} (no list of models)"
+    models = [m for m in models if isinstance(m, dict)]
     names = {m.get("name") for m in models} | {m.get("model") for m in models}
     if MODEL not in names and f"{MODEL}:latest" not in names:
         return f"the model {MODEL} is not pulled (ollama pull {MODEL})"

@@ -5,6 +5,8 @@ The model is replaced by a fake Ollama server on this computer (same HTTP API), 
     python -m pytest tests/test_spelling.py
 """
 
+import http.client
+import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -211,6 +213,31 @@ def test_correct_text_without_ollama(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")       # nothing listens there
     text, notes = sc.correct_text("رسم ولادة رقم 1\n")
     assert text == "رسم ولادة رقم 1\n" and "not reachable" in notes[0]
+
+
+@pytest.mark.parametrize("body, error", [
+    (b'{"message": null}', None), (b"[]", None), (b'"text"', None), (b"<html>", None),
+    (b'{"message": {"content": 5}}', None),
+    (None, http.client.IncompleteRead(b"")), (None, http.client.BadStatusLine("x")),
+])
+def test_a_broken_answer_of_ollama_skips_the_model(monkeypatch, body, error):
+    """A cut connection or an answer that is not Ollama's JSON: the text is kept, with a note, never a crash."""
+
+    class Answer(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def urlopen(*args, **kwargs):
+        if error:
+            raise error
+        return Answer(body)
+
+    monkeypatch.setattr(sc.urllib.request, "urlopen", urlopen)
+    text, notes = sc.correct_text("رسم ولادة رقم 1\n")
+    assert text == "رسم ولادة رقم 1\n" and "spelling model skipped" in notes[0]
 
 
 def test_remote_address_is_refused(monkeypatch):
@@ -629,14 +656,14 @@ def test_names_that_disagree(arabic, latin):
 
 def test_every_sample_name_agrees():
     """No false alarm on the samples: every child name pair of samples/ agrees."""
-    for sample in sorted((ROOT / "samples").glob("*.txt")):
-        lines = read_text_file(sample).split("\n")
+    for path in sorted((ROOT / "samples").glob("*.txt")):
+        lines = read_text_file(path).split("\n")
         names = sc.child_names(lines)
-        assert set(names) == {"first name", "family name"}, sample.name
+        assert set(names) == {"first name", "family name"}, path.name
         for sides in names.values():
             arabic = " ".join(sc.span_words(lines, sides["arabic"]))
             latin = " ".join(sc.span_words(lines, sides["latin"]))
-            assert sc.names_agree(arabic, latin), (sample.name, arabic, latin)
+            assert sc.names_agree(arabic, latin), (path.name, arabic, latin)
 
 
 @pytest.fixture

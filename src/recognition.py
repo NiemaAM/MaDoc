@@ -97,9 +97,18 @@ def _points(text):
         try:
             x, y = pair.split(",")[:2]
             points.append([round(float(x)), round(float(y))])
-        except ValueError:
+        except (ValueError, OverflowError):      # "a,b", "nan,1", "inf,2"
             continue
     return points
+
+
+def _confidence(text):
+    """A conf attribute -> a score in 0..1, or None when it is missing or not a number."""
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if 0.0 <= value <= 1.0 else None
 
 
 def parse_pagexml(xml_text):
@@ -126,11 +135,10 @@ def parse_pagexml(xml_text):
             elif name == "TextEquiv" and not entry["text"]:
                 unicode_node = next((n for n in child if n.tag.rsplit("}", 1)[-1] == "Unicode"), None)
                 entry["text"] = (unicode_node.text or "").strip() if unicode_node is not None else ""
-                if child.get("conf"):
-                    entry["confidence"] = float(child.get("conf"))
+                entry["confidence"] = _confidence(child.get("conf"))
         if entry["confidence"] is None:
-            glyphs = [float(n.get("conf")) for n in line.iter() if n.tag.rsplit("}", 1)[-1] == "TextEquiv"
-                      and n.get("conf") and n is not line]
+            glyphs = [_confidence(n.get("conf")) for n in line.iter() if n.tag.rsplit("}", 1)[-1] == "TextEquiv"]
+            glyphs = [value for value in glyphs if value is not None]
             if glyphs:
                 entry["confidence"] = sum(glyphs) / len(glyphs)
         lines.append(entry)
