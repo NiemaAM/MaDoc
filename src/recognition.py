@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
+import kraken_engine
 from common import resolve_device, run_kraken
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,14 +63,22 @@ def to_logical_order(texts):
 
 
 def run_recognition(xml_path, output_txt, model=MODEL_RECOGNITION, device="cpu", pagexml=False):
-    """Run the kraken ocr command on the segmentation xml, write the text (or a PageXML) to output_txt."""
-    run_kraken([
-        "-d", resolve_device(device),
-        "-f", "page",           # the input is a PageXML segmentation, the lines come from it
-        *(["-x"] if pagexml else []),   # PageXML output: polygons, baselines, text and confidence per line
-        "-i", str(xml_path), str(output_txt),
-        "ocr", "-m", str(model),
-    ], output_txt, "recognition")
+    """Recognize the lines of the segmentation xml, write the text (or a PageXML) to output_txt: with the model kept
+    loaded in this process (kraken_engine.py), or the kraken ocr command when that is not possible."""
+    def with_command_line():
+        run_kraken([
+            "-d", resolve_device(device),
+            "-f", "page",           # the input is a PageXML segmentation, the lines come from it
+            *(["-x"] if pagexml else []),   # PageXML output: polygons, baselines, text and confidence per line
+            "-i", str(xml_path), str(output_txt),
+            "ocr", "-m", str(model),
+        ], output_txt, "recognition")
+
+    def in_process():
+        text = kraken_engine.recognize(xml_path, model, resolve_device(device), pagexml)
+        Path(output_txt).write_text(text if pagexml else text + "\n", encoding="utf-8")
+
+    kraken_engine.run("recognition", in_process, with_command_line)
 
 
 def recognize_xml(xml, image_path=None, model=MODEL_RECOGNITION, device="cpu", fix_order=True):

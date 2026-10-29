@@ -15,3 +15,10 @@ def no_cached_answers():
         if module in sys.modules:
             getattr(sys.modules[module], cache).clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def kraken_command_line(monkeypatch):
+    """The tests stand in for the kraken command line (subprocess.run): kraken's library, installed in the image
+    of the app, is not used by them (kraken_engine.py has its own tests)."""
+    monkeypatch.setenv("MADOC_KRAKEN_CLI", "1")

@@ -966,3 +966,12 @@ def test_the_same_street_name_is_not_flagged(monkeypatch):
     monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")
     changes, _ = sc.propose(sample(2))
     assert not [c for c in changes if c.get("source") == "address"]
+
+def test_edit_distance_is_the_same_with_and_without_rapidfuzz():
+    import random
+    rng = random.Random(1)
+    letters = "ابتثجحخدذرزسشصضطظعغفقكلمنهويةىأإآء ABC"
+    for _ in range(500):
+        a = "".join(rng.choice(letters) for _ in range(rng.randrange(0, 12)))
+        b = "".join(rng.choice(letters) for _ in range(rng.randrange(0, 12)))
+        assert sc.edit_distance(a, b) == sc._edit_distance(a, b), (a, b)

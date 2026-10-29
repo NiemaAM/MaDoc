@@ -4,7 +4,8 @@
     python src/segmentation.py scan.jpg -o out/scan.xml
     python src/segmentation.py scan.jpg --model models/blla.mlmodel --device cuda:0
 
-It runs the kraken command line the same way it was tested by hand:
+The model is loaded once and kept in this process (kraken_engine.py); the result is what the kraken command line
+writes, and the command line is used when kraken's library cannot be (MADOC_KRAKEN_CLI=1 forces it):
 
     kraken -x -i scan.jpg scan.xml segment -bl -i models/blla.mlmodel
 
@@ -16,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import kraken_engine
 from common import resolve_device, run_kraken
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,10 +38,16 @@ def segment_image(image_file, model=MODEL_SEGMENTATION, device="cpu"):
     """image file -> PageXML text (what recognition.recognize_xml takes). The image is named with its full
     path inside the xml, so recognition finds it wherever the xml is stored."""
     image_file = Path(image_file).resolve()
-    with tempfile.TemporaryDirectory() as folder:
-        output_xml = Path(folder) / "segmentation.xml"
-        run_segmentation(image_file, output_xml, model, device)
-        return output_xml.read_text(encoding="utf-8")
+
+    def with_command_line():
+        with tempfile.TemporaryDirectory() as folder:
+            output_xml = Path(folder) / "segmentation.xml"
+            run_segmentation(image_file, output_xml, model, device)
+            return output_xml.read_text(encoding="utf-8")
+
+    # the model kept loaded in this process (kraken_engine.py); the command line when that is not possible
+    return kraken_engine.run("segmentation", lambda: kraken_engine.segment(image_file, model, resolve_device(device)),
+                             with_command_line)
 
 
 def main():

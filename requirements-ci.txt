@@ -6,3 +6,4 @@ python-dotenv>=1.0.0
 python-bidi
 pillow
 gradio                   # the tests of the web interface (app.py) are skipped without it
+rapidfuzz              # edit distances of the spelling rules (C implementation)

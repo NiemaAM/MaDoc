@@ -170,8 +170,21 @@ def is_known(token, vocabulary=None):
 # ---------------------------------------------------------------------------------------------------------
 # guard: which proposed changes are spelling corrections
 # ---------------------------------------------------------------------------------------------------------
+try:   # the C implementation (the same numbers, tens of times faster): the rules call it thousands of times
+    from rapidfuzz.distance import Levenshtein as _levenshtein
+except ImportError:
+    _levenshtein = None
+
+
 def edit_distance(a, b):
     """Number of letters to insert, delete or replace to turn a into b (Levenshtein)."""
+    if _levenshtein is not None:
+        return _levenshtein.distance(a, b)
+    return _edit_distance(a, b)
+
+
+def _edit_distance(a, b):
+    """edit_distance in plain Python (rapidfuzz not installed)."""
     previous = list(range(len(b) + 1))
     for i, char_a in enumerate(a, 1):
         current = [i]

@@ -132,6 +132,9 @@ which is read by every tool (it is listed in `.gitignore`).
 | `MADOC_TRANSLATE_MODEL` | the value of `MADOC_SPELL_MODEL` | Ollama model used for the translation. |
 | `MADOC_OLLAMA_URL` | `http://127.0.0.1:11434` | Address of Ollama (spelling and translation). Only this computer is accepted. |
 | `MADOC_SPELL_ALLOW_REMOTE` | not set | Set to `1` to allow an Ollama server elsewhere on your own network. |
+| `MADOC_NER_FP32` | not set | Set to `1` to run the NER models in 32-bit floats on the GPU (half precision by default: half the memory). |
+| `MADOC_KRAKEN_CLI` | not set | Set to `1` to run kraken as a command for every scan (the models are otherwise loaded once and kept in the app; same results, no start-up time per scan). |
+| `MADOC_KRAKEN_KEEP_SECONDS` | `900` | The kraken models kept in the app are let go after this many seconds without a scan (the GPU is shared with the trainings); `0` keeps them. |
 | `HF_TOKEN` | not set | Hugging Face token, needed once to download the gated French NER model. |
 | `HF_HUB_OFFLINE` | not set | Set to `1` once the NER models are downloaded: no more contact with Hugging Face. |
 | `HF_HUB_DISABLE_SYMLINKS_WARNING` | not set | Set to `1` on Windows to hide a harmless warning of the Hugging Face cache. |

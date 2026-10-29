@@ -27,6 +27,7 @@ The models are loaded the first time they are needed, so importing this module i
 """
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -71,6 +72,8 @@ def get_pipeline(model_id):
                 "python src/classificator.py --download (see the README)."
             ) from e
         model = model.to(device).eval()
+        if device == "cuda" and os.environ.get("MADOC_NER_FP32") != "1":
+            model = model.half()   # half the memory of the GPU it shares with Gemma, faster; MADOC_NER_FP32=1: off
         _pipelines[model_id] = pipeline(
             "token-classification",
             model=model,

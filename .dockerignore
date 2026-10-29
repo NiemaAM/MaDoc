@@ -1,0 +1,24 @@
+# never in the image: secrets, the git history, the CI runner and its credentials, caches
+.env
+.env.*
+!.env.example
+.git
+.github
+actions-runner
+**/__pycache__
+.pytest_cache
+.coverage
+.venv
+venv
+.gradio
+runs
+*.log
+# scans and PageXML files left in the folder (.gitignore: personal data, never committed): only the samples
+**/*.jpg
+**/*.jpeg
+**/*.tif
+**/*.tiff
+**/*.xml
+!samples/?.jpg
+out
+scripts

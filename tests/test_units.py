@@ -154,6 +154,57 @@ def test_segmentation_returns_the_xml(monkeypatch, tmp_path):
     assert str(image.resolve()) in xml
 
 
+def test_kraken_in_this_process_and_its_fallback(monkeypatch, tmp_path):
+    """The models are used inside the app when kraken's library is there; any error of it falls back to the
+    command line, and MADOC_KRAKEN_CLI=1 always uses the command line."""
+    import kraken_engine
+    image = tmp_path / "scan.jpg"
+    image.write_bytes(b"x")
+    calls = fake_kraken(monkeypatch, segmentation)
+    monkeypatch.delenv("MADOC_KRAKEN_CLI")
+    monkeypatch.setattr(kraken_engine, "enabled", lambda: True)
+    monkeypatch.setattr(kraken_engine, "segment", lambda image_file, model, device: f"<in process {image_file}>")
+    assert segmentation.segment_image(image, "models/blla.mlmodel", "cpu") == f"<in process {image.resolve()}>"
+    assert calls == []                                                   # no command line
+
+    def broken(*args):
+        raise AttributeError("an API of another kraken version")
+
+    monkeypatch.setattr(kraken_engine, "segment", broken)
+    assert str(image.resolve()) in segmentation.segment_image(image, "models/blla.mlmodel", "cpu")
+    assert calls and calls[0][-4:] == ["segment", "-bl", "-i", "models/blla.mlmodel"]   # the command line instead
+
+
+def test_kraken_models_are_released_when_idle(monkeypatch):
+    """The models kept in the app go after KEEP_SECONDS without a scan (the GPU is shared with the trainings)."""
+    import kraken_engine
+    monkeypatch.setattr(kraken_engine, "KEEP_SECONDS", 900)
+    monkeypatch.setattr(kraken_engine, "_models", {("segmentation", "m", "cpu"): object()})
+    monkeypatch.setattr(kraken_engine, "_last_use", [1000.0])
+    assert not kraken_engine.release_idle(now=1000.0 + 899) and kraken_engine._models
+    assert kraken_engine.release_idle(now=1000.0 + 901) and not kraken_engine._models
+    assert not kraken_engine.release_idle(now=5000.0)                   # nothing loaded: nothing to do
+
+
+def test_madoc_kraken_cli_forces_the_command_line(monkeypatch):
+    import importlib
+    import kraken_engine
+    importlib.reload(kraken_engine)                     # the real enabled(), whatever the other tests patched
+    monkeypatch.setenv("MADOC_KRAKEN_CLI", "1")
+    assert kraken_engine.enabled() is False
+
+
+def test_recognition_in_this_process_writes_what_the_command_line_writes(monkeypatch, tmp_path):
+    import kraken_engine
+    monkeypatch.setattr(kraken_engine, "enabled", lambda: True)
+    monkeypatch.setattr(kraken_engine, "recognize",
+                        lambda xml, model, device, pagexml: "<PcGts/>" if pagexml else "ةدالو مسر\nرطس")
+    text_file, xml_file = tmp_path / "t.txt", tmp_path / "t.xml"
+    recognition.run_recognition(tmp_path / "in.xml", text_file, "models/htr.mlmodel", "cpu")
+    recognition.run_recognition(tmp_path / "in.xml", xml_file, "models/htr.mlmodel", "cpu", pagexml=True)
+    assert text_file.read_text(encoding="utf-8") == "ةدالو مسر\nرطس\n" and xml_file.read_text() == "<PcGts/>"
+
+
 def test_recognition_text(monkeypatch, tmp_path):
     image = tmp_path / "scan.jpg"
     image.write_bytes(b"x")

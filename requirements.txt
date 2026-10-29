@@ -8,3 +8,4 @@ kraken==7.0.2
 python-bidi
 gradio
 pillow
+rapidfuzz              # edit distances of the spelling rules (C implementation)
