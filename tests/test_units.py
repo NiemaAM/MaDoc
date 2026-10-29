@@ -186,6 +186,18 @@ def test_kraken_models_are_released_when_idle(monkeypatch):
     assert not kraken_engine.release_idle(now=5000.0)                   # nothing loaded: nothing to do
 
 
+def test_the_gpu_memory_of_a_page_is_given_back(monkeypatch):
+    """After every page the cache of PyTorch is emptied, also when kraken fails: Ollama needs that memory."""
+    import types
+    import kraken_engine
+    emptied = []
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True,
+                                                                  empty_cache=lambda: emptied.append(1)))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    kraken_engine._free_gpu_cache()
+    assert emptied == [1]
+
+
 def test_madoc_kraken_cli_forces_the_command_line(monkeypatch):
     import importlib
     import kraken_engine

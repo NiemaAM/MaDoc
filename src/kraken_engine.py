@@ -42,6 +42,18 @@ def _device(device):
     return to_ptl_device(device or "cpu")
 
 
+def _free_gpu_cache():
+    """Give back to the GPU the memory PyTorch kept after a page (a full page through the segmentation network
+    reserves several GB). Kept, it leaves too little for Ollama's model, which then runs partly on the CPU and
+    makes the spelling check very slow. The models themselves stay loaded (a few tens of MB)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def release_idle(now=None):
     """Let the models go when no scan used them for KEEP_SECONDS (the next scan loads them again) -> True when
     they were released."""
@@ -50,12 +62,7 @@ def release_idle(now=None):
         if not _models or not KEEP_SECONDS or now - _last_use[0] < KEEP_SECONDS:
             return False
         _models.clear()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()   # the memory goes back to the GPU (the other programs can use it)
-    except ImportError:
-        pass
+    _free_gpu_cache()
     print("kraken models released (no scan for a while)", file=sys.stderr)
     return True
 
@@ -103,7 +110,10 @@ def segment(image_file, model, device="cpu"):
     config = SegmentationInferenceConfig(accelerator=accelerator, device=devices)
     image = open_image(str(image_file))
     with _lock, _threads(config):
-        result = _model("segmentation", model, device).predict(im=image, config=config)
+        try:
+            result = _model("segmentation", model, device).predict(im=image, config=config)
+        finally:
+            _free_gpu_cache()
     result = dataclasses.replace(result, imagename=str(image_file))
     return _serialize(result, image.size)
 
@@ -123,8 +133,11 @@ def recognize(xml_file, model, device="cpu", pagexml=True):
     segmentation = page.to_container()
     image = open_image(page.imagename)
     with _lock, _threads(config):
-        predictions = list(_model("recognition", model, device).predict(im=image, segmentation=segmentation,
-                                                                          config=config))
+        try:
+            predictions = list(_model("recognition", model, device).predict(im=image, segmentation=segmentation,
+                                                                              config=config))
+        finally:
+            _free_gpu_cache()
     if not pagexml:
         return "\n".join(p.prediction for p in predictions)
     results = dataclasses.replace(segmentation, lines=predictions, imagename=page.imagename)
