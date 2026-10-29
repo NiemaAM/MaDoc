@@ -4,7 +4,6 @@ transformers>=4.40.0
 sentencepiece            # tokenizer of the French NER model (CamemBERT)
 protobuf
 torch>=2.2.0
-gradio_client>=1.0.0
 kraken==7.0.2
 python-bidi
 gradio

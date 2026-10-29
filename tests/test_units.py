@@ -582,7 +582,6 @@ def test_latin_lines_offsets():
 def test_french_ner_local(monkeypatch):
     seen = []
     monkeypatch.setattr(classificator, "get_french_pipeline", lambda: lambda t: seen.append(t) or fake_ner(t))
-    monkeypatch.setattr(classificator, "classify_french_space", lambda t: pytest.fail("Space called"))
     found = classificator.classify_french(NER_TEXT)
     assert seen == ["PRENOM AYOUB", "NOM SBAI"]          # the Arabic lines are never given to it
     assert [e["entity"] for e in found] == ["AYOUB", "SBAI"]
@@ -593,21 +592,16 @@ def test_french_ner_local(monkeypatch):
 def test_french_ner_missing_model_is_reported_not_sent(monkeypatch):
     def missing():
         raise classificator.ModelUnavailable("not downloaded")
-    monkeypatch.delenv("MADOC_FRENCH_NER_SPACE", raising=False)
     monkeypatch.setattr(classificator, "get_french_pipeline", missing)
-    monkeypatch.setattr(classificator, "classify_french_space", lambda t: pytest.fail("Space called"))
     result = classificator.classify(NER_TEXT, use_arabic=False)
     assert result["french_ner"] == [] and "not downloaded" in result["errors"][0]
     assert result["models"]["fr"] == "TypicaAI/magbert-ner"
 
 
-def test_french_ner_space_only_when_allowed(monkeypatch):
-    def missing():
-        raise classificator.ModelUnavailable("not downloaded")
-    monkeypatch.setenv("MADOC_FRENCH_NER_SPACE", "1")
-    monkeypatch.setattr(classificator, "get_french_pipeline", missing)
-    monkeypatch.setattr(classificator, "classify_french_space", lambda t: [{"entity": "X", "label": "PERSON"}])
-    assert classificator.classify_french(NER_TEXT) == [{"entity": "X", "label": "PERSON"}]
+def test_no_online_ner_service():
+    """Nothing in the classificator can send the text online (the old Hugging Face Space fallback is gone)."""
+    source = Path(classificator.__file__).read_text(encoding="utf-8")
+    assert "gradio_client" not in source and "Client(" not in source and not hasattr(classificator, "SPACE_FR")
 
 
 def test_french_ner_skipped_without_latin(monkeypatch):

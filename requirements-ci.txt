@@ -1,5 +1,7 @@
 # what the tests need: no torch / transformers / kraken (the models are never loaded)
 pytest>=8.0.0
+pytest-cov==7.1.0        # the coverage of every run, printed in the CI log
+ruff==0.16.9             # lint: undefined names, unused imports, syntax errors
 python-dotenv>=1.0.0
 python-bidi
 pillow

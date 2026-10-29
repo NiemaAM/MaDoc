@@ -2,7 +2,7 @@
 
     python src/translator.py mapped.json [-o translated.json]
 
-One request to the local model (Ollama, qwen2.5:7b by default, the same server as the spelling checker)
+One request to the local model (Ollama, gemma3:12b by default, the same server as the spelling checker)
 translates every name / address / employee of the record, and the professions that the dictionary (mapper.py)
 did not find. Nothing is sent online: the Ollama address must be this computer, as for the spelling checker
 (MADOC_OLLAMA_URL, MADOC_SPELL_ALLOW_REMOTE). Official place names come from cities.json / places.json and

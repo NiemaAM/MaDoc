@@ -135,7 +135,6 @@ which is read by every tool (it is listed in `.gitignore`).
 | `HF_TOKEN` | not set | Hugging Face token, needed once to download the gated French NER model. |
 | `HF_HUB_OFFLINE` | not set | Set to `1` once the NER models are downloaded: no more contact with Hugging Face. |
 | `HF_HUB_DISABLE_SYMLINKS_WARNING` | not set | Set to `1` on Windows to hide a harmless warning of the Hugging Face cache. |
-| `MADOC_FRENCH_NER_SPACE` | not set | Set to `1` to fall back on the online Hugging Face Space when the local French model is missing. This sends the text online. |
 | `MADOC_AUTH` | not set | `user:password` (several separated by commas): the web interface asks for a login. |
 | `BIRTH_DICT_DIR` | `dictionaries/` | Folder containing the dictionaries, if they are kept somewhere else. |
 
@@ -545,7 +544,6 @@ Birth certificates are personal data. Every stage runs on the computer that proc
 | Stage | Data sent | Destination |
 |---|---|---|
 | Segmentation, recognition, spelling, NER (both models), parsing, conversion, mapping, translation, validation | nothing | |
-| French NER, only with `MADOC_FRENCH_NER_SPACE=1` and no local model | the whole transcription | Hugging Face Space `TypicaAI/MagBERT-NER-Fr` |
 | Web interface started with `--share` | everything uploaded and displayed | gradio's relay server (gradio.live) |
 
 The spelling checker and the translator refuse any Ollama address other than this computer unless

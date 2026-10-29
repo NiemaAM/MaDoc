@@ -8,7 +8,7 @@ The documents are personal data: the model runs on this computer with Ollama (ht
 sent to an online API. The Ollama address must be this computer (localhost); MADOC_SPELL_ALLOW_REMOTE=1 allows
 another address (a server of your own network, never a public service).
 
-    ollama pull qwen2.5:7b            # once
+    ollama pull gemma3:12b            # once
     (Ollama runs in the background; MADOC_SPELL_MODEL / MADOC_OLLAMA_URL change the model / address)
 
 How "only spelling" is enforced
@@ -53,7 +53,7 @@ from common import (
 )
 
 OLLAMA_URL = os.environ.get("MADOC_OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.environ.get("MADOC_SPELL_MODEL", "qwen2.5:7b")
+MODEL = os.environ.get("MADOC_SPELL_MODEL", "gemma3:12b")   # README, Configuration; the platform unloads it before a training
 TIMEOUT = 600   # seconds: a 7B model on a CPU needs a few minutes for a whole certificate
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 

@@ -22,12 +22,11 @@ Both models run on this computer with transformers (nothing is sent online):
     lines written in Latin letters ("PRENOM AYOUB", "NOM SBAI"): the rest of a certificate is Arabic.
 The French model is gated on Hugging Face: accept its conditions once and log in with a token (README), then it
 is kept in the Hugging Face cache; HF_HUB_OFFLINE=1 (environment or .env) forbids any further download.
-The online Space is used only when MADOC_FRENCH_NER_SPACE=1 is set and the local model cannot be loaded.
+No text is ever sent to an online service: a model that cannot be loaded is reported, never replaced.
 The models are loaded the first time they are needed, so importing this module is cheap.
 """
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
@@ -42,14 +41,12 @@ load_dotenv()
 # Connect models
 MODEL_AR = "TypicaAI/MagBERT-NER-AR"
 MODEL_FR = "TypicaAI/magbert-ner"
-SPACE_FR = "TypicaAI/MagBERT-NER-Fr"   # the online demo of MODEL_FR, only with MADOC_FRENCH_NER_SPACE=1
 # BERT models read at most 512 tokens: longer texts are classified in windows of this many characters
 MAX_CHARS = 1000
 # a line is sent to the French model when it has at least this many Latin letters
 MIN_LATIN_LETTERS = 2
 
 _pipelines = {}
-_french_client = None
 
 
 class ModelUnavailable(RuntimeError):
@@ -92,16 +89,6 @@ def get_arabic_pipeline():
 def get_french_pipeline():
     """Load the French NER model once."""
     return get_pipeline(MODEL_FR)
-
-
-def get_french_client():
-    """Connect to the French NER Space once (needs gradio_client): only with MADOC_FRENCH_NER_SPACE=1."""
-    global _french_client
-    if _french_client is None:
-        from gradio_client import Client
-
-        _french_client = Client(SPACE_FR)
-    return _french_client
 
 
 def chunk_text(text, max_chars=MAX_CHARS):
@@ -168,17 +155,11 @@ def classify_arabic(text):
 # NLP labeling FR
 def classify_french(text):
     """Run the French NER model of this computer on the Latin lines; offsets relative to the whole text.
-
-    The online Space is used instead only when MADOC_FRENCH_NER_SPACE=1 and the local model is missing."""
+    A missing model raises (classify reports it): the text is never sent online instead."""
     lines = latin_lines(text)
     if not lines:
         return []
-    try:
-        ner = get_french_pipeline()
-    except (ModelUnavailable, ImportError):
-        if os.environ.get("MADOC_FRENCH_NER_SPACE") == "1":
-            return classify_french_space(text)
-        raise
+    ner = get_french_pipeline()
     french_ner = []
     for offset, line in lines:
         french_ner.extend(french_line_entities(ner, offset, line))
@@ -231,21 +212,6 @@ def french_line_entities(ner, offset, line):
         if found:
             return found
     return []
-
-
-def classify_french_space(text):
-    """The French NER Space (online: the text is sent to Hugging Face). Only with MADOC_FRENCH_NER_SPACE=1."""
-    res_fr = get_french_client().predict(text=text, api_name="/predict")
-    # Keep French results that have a class or label
-    french_ner = []
-    for item in res_fr:
-        label = item.get("class_or_confidence")
-        if label is not None:
-            french_ner.append({
-                "entity": item.get("token", "").strip(),
-                "label": label,
-            })
-    return french_ner
 
 
 _results = {}          # (text, use_arabic, use_french) -> result, the last few documents

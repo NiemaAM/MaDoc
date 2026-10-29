@@ -142,6 +142,19 @@ def latin_field(label, text):
     return " ".join(words)
 
 
+def split_latin_tail(parsed, arabic, french, notes):
+    """'هشام HICHAM' in the Arabic field and the French one empty -> 'هشام' and 'HICHAM'."""
+    words = parsed[arabic].split()
+    tail = len(words)
+    while tail > 0 and LATIN_WORD.match(words[tail - 1]) and words[tail - 1] not in ("NOM", "PRENOM"):
+        tail -= 1
+    if parsed[french] or tail == len(words) or tail == 0:
+        return
+    parsed[arabic], parsed[french] = " ".join(words[:tail]), " ".join(words[tail:])
+    notes.append(f"{french}: its label was not read, the Latin words after {arabic} are its value: "
+                 f"{parsed[french]!r}")
+
+
 def strip_latin_labels(block):
     """Remove 'PRENOM xxx' / 'NOM xxx' (child's French names) that landed in a parent block."""
     for label in ("PRENOM", "NOM"):
@@ -1185,6 +1198,10 @@ def parse_with_notes(raw_text, ner=None):
     parsed["EMPLOYECREANT"] = extract(
         r"من\s+طرفنا\s+نحن\s+(.*?)(?=\s*(?<!\S)و\s*بعد\s+تلاوة|\s*(?<!\S)و\s*ضابط|\s*$)", administrative
     )
+    # the "PRENOM" / "NOM" label of a Latin line misread: the Latin name went on the Arabic one
+    # ("هشام HICHAM"); it is the French value
+    for arabic, french_field in (("PRENOMAR", "PRENOM"), ("NOMAR", "NOM")):
+        split_latin_tail(parsed, arabic, french_field, notes)
     # 6. NER as a second extractor: fill what the rules could not read, replace what they read wrongly,
     #    note every difference
     if entities or french:
