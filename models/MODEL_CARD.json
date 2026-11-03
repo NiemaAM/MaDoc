@@ -1,0 +1,54 @@
+{
+  "blla": {
+    "artifact": "kraken-blla-bc:v1",
+    "dataset_version": "5f529fc061f2c209",
+    "pages": {
+      "val": 135,
+      "test": 134,
+      "train": 500
+    },
+    "trained_at": "2026-11-03T01:22:46.032499+00:00",
+    "test_version": "5f529fc061f2c209",
+    "test_metrics": {
+      "f1": 0.969,
+      "recall": 0.981,
+      "precision": 0.958,
+      "mean_e2e_cer": 5.8739,
+      "mean_e2e_word_f1": 0.8608
+    },
+    "evaluation": {
+      "low": -0.0072,
+      "gain": 0.0075,
+      "high": 0.0241,
+      "pages": 134,
+      "wandb": {
+        "group": "blla-eval-job27",
+        "candidate": "https://wandb.ai/arabic-htr/kraken-blla-eval/runs/4z3anyn2",
+        "production": "https://wandb.ai/arabic-htr/kraken-blla-eval/runs/m8crcevy"
+      },
+      "groups": 3,
+      "metric": "e2e_word_f1",
+      "interval": "by page",
+      "confidence": 0.95,
+      "group_gains": {
+        "233d3e001a51b861": {
+          "gain": 0.0172,
+          "pages": 71
+        },
+        "2511dc2e1fed1cf4": {
+          "gain": -0.0116,
+          "pages": 47
+        },
+        "54ad882466d407bd": {
+          "gain": 0.0209,
+          "pages": 16
+        }
+      },
+      "excluded_pages": {
+        "candidate": 0,
+        "production": 0
+      },
+      "higher_is_better": true
+    }
+  }
+}
