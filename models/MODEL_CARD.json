@@ -50,5 +50,83 @@
       },
       "higher_is_better": true
     }
+  },
+  "htr": {
+    "artifact": "kraken-htr-bc:v12",
+    "dataset_version": "84dc6260ef0f12e9",
+    "pages": {
+      "val": 90,
+      "test": 158,
+      "train": 677
+    },
+    "trained_at": "2026-11-11T00:13:38.880059+00:00",
+    "test_version": "84dc6260ef0f12e9",
+    "test_metrics": {
+      "cer": 2.97,
+      "wer": 11.196,
+      "cer_lp": 2.444,
+      "errors": 2651,
+      "cer_low": 2.571,
+      "wer_low": 10.116,
+      "cer_high": 3.465,
+      "wer_high": 12.516,
+      "cer_latin": 2.85,
+      "deletions": 643,
+      "names_cer": 2.728,
+      "cer_arabic": 1.716,
+      "cer_common": 3.348,
+      "cer_lp_low": 2.097,
+      "characters": 109091,
+      "insertions": 951,
+      "line_exact": 64.085,
+      "cer_lp_high": 2.88,
+      "names_exact": 86.62,
+      "cer_latin_low": 1.926,
+      "mean_page_cer": 5.2429,
+      "substitutions": 1057,
+      "word_accuracy": 89.22,
+      "cer_arabic_low": 1.473,
+      "cer_common_low": 2.911,
+      "cer_latin_high": 4.096,
+      "line_exact_low": 61.845,
+      "cer_arabic_high": 2.027,
+      "cer_common_high": 3.897,
+      "line_exact_high": 66.283,
+      "names_normalized": 90.45,
+      "character_accuracy": 97.57,
+      "character_accuracy_ci": 97.59
+    },
+    "evaluation": {
+      "low": -2.3307,
+      "gain": -1.8236,
+      "high": -1.3314,
+      "unit": "writer",
+      "pages": 158,
+      "wandb": {
+        "group": "htr-eval-job63",
+        "candidate": "https://wandb.ai/arabic-htr/kraken-htr-eval/runs/x00fqblb",
+        "production": "https://wandb.ai/arabic-htr/kraken-htr-eval/runs/6ygkxkqx"
+      },
+      "groups": 2,
+      "metric": "page_cer",
+      "interval": "by page",
+      "confidence": 0.95,
+      "group_gains": {
+        "3148e328037f6125": {
+          "gain": -1.8589,
+          "pages": 136
+        },
+        "37055f4c7161132f": {
+          "gain": -1.6057,
+          "pages": 22
+        }
+      },
+      "excluded_pages": {
+        "candidate": 0,
+        "production": 0
+      },
+      "metric_interval": "by page (fewer than 5 writers: by writer would mean nothing)",
+      "higher_is_better": false
+    }
   }
 }
