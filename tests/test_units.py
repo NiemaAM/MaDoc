@@ -1095,3 +1095,11 @@ def test_app_shows_every_stage_and_checks_the_spelling_on_demand(tmp_path, monke
     applied = app.set_text(checked, app.apply_changes(spelling["text"], spelling["changes"],
                                                       set(spelling["accepted"])), options, "c_spelling")
     assert "البيتت" not in applied["history"][-1]
+
+
+def test_dates_with_thaman_written_without_its_ending():
+    """"ثمان" (eight, without its ending) in a year: 1978 and 1398, not the text left as it was."""
+    import converter
+    record = converter.convert(dict(common.TEMPLATE, DATENAISSPEREFR="عشرين أكتوبر سنة ألف و تسعمائة و ثمان و سبعين",
+                                    DATENAISSPEREAR="سابع عشر ذو القعدة عام ألف و ثلاثمائة و ثمان و تسعين"))
+    assert (record["DATENAISSPEREFR"], record["DATENAISSPEREAR"]) == ("1978-10-20", "1398-11-17")
