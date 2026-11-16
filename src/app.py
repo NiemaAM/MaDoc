@@ -54,7 +54,7 @@ from common import TEMPLATE, normalize_text, resolve_device, write_json
 from mapper import map_fields
 from parser import find_zones, flatten
 from pipeline import run_pipeline
-from recognition import MODEL_RECOGNITION, recognize_lines
+from recognition import MODEL_RECOGNITION, parse_pagexml, recognize_lines
 from segmentation import MODEL_SEGMENTATION, segment_image
 from spelling_checker import MODEL as SPELL_MODEL, apply_changes, describe, line_units, propose
 from validator import validate
@@ -706,17 +706,21 @@ def transcription(lines):
     return "\n".join(line["text"] for line in lines) + "\n"
 
 
-def parse_text(doc, text, options):
-    """Run the parsing chain on `text` and store the record, the report, the notes and the field lines."""
+def parse_text(doc, text, options, ner=None):
+    """Run the parsing chain on `text` and store the record, the report, the notes and the field lines.
+
+    ner: the entities already found on this same text (document_stages parses it twice, without then with the
+    translation): the NER models are not run again."""
     stages = {}
     record, report, notes = run_pipeline(
-        text, use_ner=options["ner"], use_translation=options["translate"], use_french_ner=options["french_ner"],
-        stages=stages,
+        text, ner=ner, use_ner=options["ner"], use_translation=options["translate"],
+        use_french_ner=options["french_ner"], stages=stages,
     )
     doc["auto_record"] = record
     record, report, record_notes = keep_record_edits(doc, record, report, options)
     doc.update(record=record, report=report, parser_notes=[f"[parser] {n}" for n in notes],
-               field_lines=field_lines(text, stages.get("parsed")), record_notes=record_notes)
+               field_lines=field_lines(text, stages.get("parsed")), record_notes=record_notes,
+               ner=stages.get("ner"))
     doc["notes"] = doc.get("spelling_notes", []) + doc["parser_notes"] + record_notes
     write_files(doc, text)
     return doc
@@ -952,9 +956,76 @@ def edit_text(doc, text, options, progress=None, spelling=None):
     return parse_text(doc, corrected, options), spelling
 
 
+PENDING = "…"   # the text of a line found by the segmentation and not read yet
+
+
+def document_stages(image_path, name, options, threshold, device, segmentation_model, recognition_model,
+                    progress=None):
+    """The run of the interface, one result at a time: yields (stage, doc) after the segmentation (the lines on
+    the scan, no text yet), the recognition (the text), the formatting (the record, without the local model) and,
+    when the translation is on, the translation (the French fields made by the local model).
+
+    The spelling is not checked here: it is checked when the person asks for it (spell_document). doc["busy"] is
+    True until the last stage: the buttons that change the document wait for it."""
+    folder = new_run_folder()
+    (folder / "original").mkdir()
+    original = folder / "original" / file_name(name)
+    shutil.copyfile(image_path, original)
+    image_path = prepare_image(image_path, folder)
+    if progress:
+        progress(0.05, desc="Segmentation (kraken blla)")
+    xml = segment_image(image_path, segmentation_model, device)
+    found = parse_pagexml(xml)
+    doc = {"folder": str(folder), "image": image_path, "original": str(original), "name": name, "xml": xml,
+           "lines": [{**line, "text": "", "confidence": None} for line in found], "htr": "",
+           "threshold": threshold, "log": [], "busy": True,
+           "history": ["".join(PENDING + "\n" for _ in found)], "position": 0}
+    yield "segmentation", doc
+    if progress:
+        progress(0.35, desc="Recognition (kraken HTR)")
+    lines = recognize_lines(xml, image_path, recognition_model, device)
+    if not lines:
+        raise gr.Error("No text line was recognized on this image.")
+    htr = transcription(lines)
+    doc = dict(doc, lines=lines, htr=htr, history=[htr], position=0,
+               log=[log_entry("c_file", name=name, count=len(lines))])
+    yield "recognition", doc
+    if progress:
+        progress(0.7, desc="Parsing, mapping, validation")
+    translate = options["translate"]
+    doc = parse_text(dict(doc), htr, {**options, "translate": False})
+    doc["busy"] = translate
+    yield "formatting", doc
+    if translate:
+        if progress:
+            progress(0.85, desc=f"Translation (local model {translator.MODEL})")
+        fast = doc
+        try:
+            doc = parse_text(dict(fast), htr, options, ner=fast.get("ner"))
+        except Exception as e:   # the local model: the record without translation stays
+            doc = dict(fast, notes=fast.get("notes", []) + [f"[translation] not done ({type(e).__name__}: {e})"])
+        doc["busy"] = False
+        yield "translation", doc
+
+
+def spell_document(doc, options, spelling=None, progress=None):
+    """The spelling proposals on the current text, asked by the person (℁): nothing is applied, the review
+    shows the choice of the rules and Apply writes it. -> (doc, spelling state)
+
+    The words that differ from the recognized text were written by hand: a correction on them is only proposed
+    (orange); a correction refused in the previous review stays refused."""
+    doc = dict(doc)
+    keep_alive(doc)
+    text = doc["history"][doc["position"]]
+    spelling, _ = check_spelling(doc, {**options, "spellcheck": True}, progress, text=text,
+                                 protect=edited_words(doc["htr"], text), refused=person_refused(spelling or {}))
+    return doc, spelling
+
+
 def start_document(image_path, name, options, threshold, device, segmentation_model, recognition_model,
                    progress=None):
-    """Scan -> segmentation -> recognition -> spelling -> parsing: the document state of the interface."""
+    """Scan -> segmentation -> recognition -> spelling -> parsing in one call (the interface uses
+    document_stages, which shows every result as soon as it is there and leaves the spelling to its button)."""
     folder = new_run_folder()
     (folder / "original").mkdir()
     original = folder / "original" / file_name(name)
@@ -1038,7 +1109,8 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             help_button = make(gr.Button, value="ⓘ", size="sm", scale=0, min_width=48, elem_classes="md-help")
         with gr.Column(visible=False) as options_panel:
             with gr.Row():
-                use_spellcheck = gr.Checkbox(True, label=I18N("opt_spellcheck"))
+                # the spelling is checked with its button (℁) only: the option is kept for the handlers, not shown
+                use_spellcheck = gr.Checkbox(True, label=I18N("opt_spellcheck"), visible=False)
                 use_ner = gr.Checkbox(True, label=I18N("opt_ner"))
                 use_french_ner = gr.Checkbox(True, label=I18N("opt_french_ner"))
                 use_translate = gr.Checkbox(True, label=I18N("opt_translate"))
@@ -1115,10 +1187,9 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                   save_button, download_image, download_segmentation, download_text, download_json]
 
         def render(doc, zoom, limit):
-            ready = bool(doc)
-
             def download(key):
-                return gr.update(value=file_or_none(doc, key), interactive=ready)
+                path = file_or_none(doc, key)
+                return gr.update(value=path, interactive=bool(path))
 
             return [image_html(doc, zoom), segmentation_html(doc, zoom, limit), text_html(doc, limit),
                     record_html(doc), (doc or {}).get("record"), console_html(doc, limit),
@@ -1138,15 +1209,25 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         review_outputs = [spelling_view, spelling_details, spelling_state]
 
         # events -------------------------------------------------------------------------------------------
+        def staged(path, options, limit, zoom, progress):
+            """The outputs of an upload after every stage: the segmentation, then the text, then the record."""
+            for _, doc in document_stages(path, Path(path).name, options, limit, device, segmentation_model,
+                                          recognition_model, progress):
+                yield [doc, *spelling_review(dict(NO_SPELLING)), *render(doc, zoom, limit), *mode("text"),
+                       *closed_files()]
+
+        def need(doc):
+            """The buttons that change the document: a scan is there, and its run is finished."""
+            if not doc:
+                raise gr.Error("Import a scan first.")
+            if doc.get("busy") or not doc.get("record"):
+                raise gr.Error("This scan is still being processed: wait for the record.")
+
         def on_upload(file, ner, french_ner, translate, spellcheck, limit, zoom, progress=gr.Progress()):
             if not file:
                 raise gr.Error("Choose a scan.")
             path = file if isinstance(file, str) else getattr(file, "name", str(file))
-            options = options_of(ner, french_ner, translate, spellcheck)
-            doc, spelling = start_document(path, Path(path).name, options, limit, device, segmentation_model,
-                                           recognition_model, progress)
-            review = spelling_review(spelling)
-            return [doc, *review, *render(doc, zoom, limit), *mode("text"), *closed_files()]
+            yield from staged(path, options_of(ner, french_ner, translate, spellcheck), limit, zoom, progress)
 
         def on_sample(ner, french_ner, translate, spellcheck, limit, zoom, evt: gr.SelectData,
                       progress=gr.Progress()):
@@ -1155,10 +1236,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
             if not 0 <= index < len(samples):
                 raise gr.Error("Choose a sample.")
             path = samples[index]
-            options = options_of(ner, french_ner, translate, spellcheck)
-            doc, spelling = start_document(path, Path(path).name, options, limit, device, segmentation_model,
-                                           recognition_model, progress)
-            return [doc, *spelling_review(spelling), *render(doc, zoom, limit), *mode("text"), *closed_files()]
+            yield from staged(path, options_of(ner, french_ner, translate, spellcheck), limit, zoom, progress)
 
         def closed_files():
             """After a scan is chosen: the Files choices and the samples are closed."""
@@ -1179,22 +1257,16 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                              ).then(None, None, None, js=notification_js())
 
         def on_rerun(doc, ner, french_ner, translate, spellcheck, limit, zoom, progress=gr.Progress()):
-            if not doc:
-                raise gr.Error("Import a scan first.")
+            need(doc)
             options = options_of(ner, french_ner, translate, spellcheck)
             doc = dict(doc)
             keep_alive(doc)
-            spelling, text = check_spelling(doc, options, progress)
-            # a new version in the history: the hand edits stay one ↶ away
-            history = doc["history"][:doc["position"] + 1]
-            if text != history[-1]:
-                history.append(text)
-            doc.update(history=history, position=len(history) - 1)
-            parse_text(doc, text, options)
-            return [doc, *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
+            progress(0.5, desc="Parsing, mapping, translation, validation")
+            parse_text(doc, doc["history"][doc["position"]], options)   # the current text, with these options
+            return [doc, *render(doc, zoom, limit), *mode("text")]
 
         rerun.click(on_rerun, [doc_state, *option_inputs, threshold, zoom_state],
-                    [doc_state, *review_outputs, *panels, *modes]).then(None, None, None, js=notification_js())
+                    [doc_state, *panels, *modes]).then(None, None, None, js=notification_js())
 
         def on_zoom(doc, zoom, step, limit):
             index = min(range(len(ZOOM_STEPS)), key=lambda i: abs(ZOOM_STEPS[i] - zoom))
@@ -1209,10 +1281,8 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                                                     console_html(doc, limit)],
                           [doc_state, zoom_state, threshold], [segmentation_view, text_view, console])
 
-        def on_edit(doc, editing_text, view, spelling, ner, french_ner, translate, spellcheck, limit, zoom,
-                    progress=gr.Progress()):
-            if not doc:
-                raise gr.Error("Import a scan first.")
+        def on_edit(doc, editing_text, view, spelling, ner, french_ner, translate, spellcheck, limit, zoom):
+            need(doc)
             if view != "edit":   # start editing
                 return [doc, gr.update(value=doc["history"][doc["position"]]), *spelling_review(spelling),
                         *render(doc, zoom, limit), *mode("edit")]
@@ -1221,27 +1291,33 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
                 raise gr.Error("The transcription is empty.")
             if text == doc["history"][doc["position"]]:   # nothing changed: no new check
                 return [doc, gr.update(), *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
-            # the spelling is checked again on the edited text (only the new lines go to the model)
-            doc, spelling = edit_text(doc, text, options_of(ner, french_ner, translate, spellcheck), progress,
-                                      spelling)
+            # parsed again; the spelling of the edited text is checked when ℁ is clicked
+            doc = set_text(doc, text, options_of(ner, french_ner, translate, spellcheck), "c_edit")
             return [doc, gr.update(), *spelling_review(spelling), *render(doc, zoom, limit), *mode("text")]
 
         edit_button.click(on_edit, [doc_state, text_edit, view_state, spelling_state, *option_inputs, threshold,
                                     zoom_state],
                           [doc_state, text_edit, *review_outputs, *panels, *modes])
 
-        def on_spelling_button(doc, view, spelling):
-            if not doc:
-                raise gr.Error("Import a scan first.")
-            if not spelling["text"]:
-                gr.Info("The spelling check is off: turn it on in Options, then run again.")
-            return mode("text") if view == "spelling" else mode("spelling")
+        def on_spelling_button(doc, view, spelling, ner, french_ner, translate, spellcheck,
+                               progress=gr.Progress()):
+            """℁: the spelling of the current text is checked now (local model), then reviewed; a second click
+            closes the review. The check is not run again while the text is the one already checked."""
+            need(doc)
+            if view == "spelling":
+                return [doc, *spelling_review(spelling), *mode("text")]
+            if spelling.get("text") != doc["history"][doc["position"]]:
+                doc, spelling = spell_document(doc, options_of(ner, french_ner, translate, spellcheck), spelling,
+                                               progress)
+                if not spelling["changes"]:
+                    gr.Info("The spelling check proposes no correction.")
+            return [doc, *spelling_review(spelling), *mode("spelling")]
 
-        spelling_button.click(on_spelling_button, [doc_state, view_state, spelling_state], modes)
+        spelling_button.click(on_spelling_button, [doc_state, view_state, spelling_state, *option_inputs],
+                              [doc_state, *review_outputs, *modes])
 
         def on_history(doc, step, ner, french_ner, translate, spellcheck, limit, zoom):
-            if not doc:
-                raise gr.Error("Import a scan first.")
+            need(doc)
             doc = move_in_history(doc, step, options_of(ner, french_ner, translate, spellcheck))
             return [doc, *render(doc, zoom, limit), *mode("text")]
 
@@ -1254,7 +1330,8 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         refuse_all.click(lambda state: set_all(state, False), [spelling_state], review_outputs)
 
         def on_apply(doc, spelling, ner, french_ner, translate, spellcheck, limit, zoom):
-            if not doc or not spelling["text"]:
+            need(doc)
+            if not spelling["text"]:
                 raise gr.Error("No spelling check to apply.")
             text = apply_changes(spelling["text"], resolved(spelling), set(spelling["accepted"]))
             doc = dict(doc, spelling_notes=[n for n in spelling_notes(spelling).strip().split("\n") if n])
@@ -1290,8 +1367,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
         json_outputs = [*other_panels, json_editor, table_view, json_view, json_edit_button, json_mode]
 
         def on_json_edit(doc, before, written, raw, ner, french_ner, translate, spellcheck, limit, zoom):
-            if not doc or not doc.get("record"):
-                raise gr.Error("Import a scan first.")
+            need(doc)
             if before is None:   # start editing: the record as JSON
                 record = doc["record"]
                 return [{"folder": doc["folder"], "record": record}, doc,
@@ -1312,8 +1388,7 @@ def build_app(device="cpu", segmentation_model=MODEL_SEGMENTATION, recognition_m
 
         def on_translate(doc, editing, ner, french_ner, translate, spellcheck, limit, zoom,
                          progress=gr.Progress()):
-            if not doc or not doc.get("record"):
-                raise gr.Error("Import a scan first.")
+            need(doc)
             if editing is not None:
                 raise gr.Error("Finish the edit of the record first (✓).")
             reason = translator.unavailable_reason()

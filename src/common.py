@@ -121,6 +121,9 @@ TEMPLATE = {
     "EMPLOYECREANTFR": "",  # NAME + FONCTIONAIRE ET OFFECIER DETAT CIVIL
     "BECNAME": "بالتفويض",
     "BECNAMEFR": "PAR DELEGATION",
+    # marginal notes (page 1 of the act, "البيانات الهامشية"): the Arabic text and the French text written there
+    "TEXTEMENTIONS": "",
+    "TEXTEMENTIONSFR": "",
 }
 
 # fixed French job title of the civil status employee

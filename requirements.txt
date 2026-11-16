@@ -6,6 +6,10 @@ protobuf
 torch>=2.2.0
 kraken==7.0.2
 python-bidi
-gradio
+gradio                 # the previous interface (src/app.py)
+fastapi                # the web application (src/server.py)
+uvicorn
+python-multipart       # the uploads
+psutil                 # CPU and memory of the Monitoring page
 pillow
 rapidfuzz              # edit distances of the spelling rules (C implementation)

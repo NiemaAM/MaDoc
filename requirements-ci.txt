@@ -5,5 +5,9 @@ ruff==0.16.9             # lint: undefined names, unused imports, syntax errors
 python-dotenv>=1.0.0
 python-bidi
 pillow
-gradio                   # the tests of the web interface (app.py) are skipped without it
+gradio                   # the tests of the previous interface (app.py) are skipped without it
+fastapi                  # the web application (server.py): its tests are skipped without fastapi, httpx
+httpx                    # or python-multipart
+python-multipart
+psutil
 rapidfuzz              # edit distances of the spelling rules (C implementation)
