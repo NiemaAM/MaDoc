@@ -56,7 +56,10 @@ def file_name(name):
 
 
 def empty_page():
-    return {"image": "", "original": "", "name": "", "width": 0, "height": 0, "state": "empty", "lines": []}
+    # rev: changes with every scan stored, so the browser never shows the previous scan of the page from its cache
+    # (two scans of a register have the same size and the same stored name, page2.jpg)
+    return {"image": "", "original": "", "name": "", "width": 0, "height": 0, "rev": "", "state": "empty",
+            "lines": []}
 
 
 def new(name=""):
@@ -190,7 +193,8 @@ def set_page(doc_id, page, data, name):
 
         def change(doc):
             doc["pages"][page] = {**empty_page(), "image": prepared.name, "original": original.name, "name": name,
-                                  "width": size[0], "height": size[1], "state": "uploaded"}
+                                  "width": size[0], "height": size[1], "rev": uuid.uuid4().hex[:12],
+                                  "state": "uploaded"}
             if not doc["name"] or page == "2":
                 doc["name"] = name
             doc.update(record=None, auto_record=None, report=None, notes=[], field_lines={}, stale=False,
