@@ -25,7 +25,8 @@ jobs:
       - name: Start the new version
         run: cd ~/Documents/MaDoc && docker compose up -d --remove-orphans
       - name: Check it answers
-        run: curl -fsS --retry 40 --retry-delay 5 --retry-all-errors http://127.0.0.1:7860/ > /dev/null
+        # /healthz answers without a login (the other pages answer 401 when MADOC_AUTH is set)
+        run: curl -fsS --retry 40 --retry-delay 5 --retry-all-errors http://127.0.0.1:7860/healthz > /dev/null
       - name: Remove the images of old versions (the last 5 are kept)
         run: |
           docker images madoc --format '{{.Tag}} {{.CreatedAt}}' | grep -v '^latest ' | sort -k2 -r | tail -n +6 \
