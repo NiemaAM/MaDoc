@@ -184,6 +184,10 @@ def test_web_refuses_bad_uploads_unknown_documents_and_busy_documents(web, monke
     page = client.put(f"/api/docs/{doc}/pages/2", files={"file": ("../../évil name.jpg", data.getvalue(), "image/jpeg")}
                       ).json()["pages"]["2"]
     assert (page["width"], page["height"]) == (400, 600) and "/" not in page["name"]
+    # another scan of the same size: same stored name, but a new rev (the address of its image in the browser)
+    again = client.put(f"/api/docs/{doc}/pages/2", files={"file": ("b.jpg", data.getvalue(), "image/jpeg")}
+                       ).json()["pages"]["2"]
+    assert again["image"] == page["image"] and again["rev"] and again["rev"] != page["rev"]
     assert client.get(f"/api/docs/{doc}/pages/2/image").headers["content-type"] == "image/png"
     # while a run works on the document, changes are refused
     from madoc_web import store

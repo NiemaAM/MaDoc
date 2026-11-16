@@ -168,7 +168,8 @@
       presentPages() { return this.doc ? ["2", "1"].filter((p) => this.has(p)) : []; },
       lines() { return this.doc ? this.doc.pages[this.page].lines : []; },
       dirtyCount() { return this.lines().filter((l) => l.dirty).length; },
-      imageUrl(p) { return "/api/docs/" + this.doc.id + "/pages/" + p + "/image?v=" + encodeURIComponent(this.doc.pages[p].image + this.doc.pages[p].width); },
+      // rev changes with every scan stored: a new scan is a new address, never the previous one from the cache
+      imageUrl(p) { const s = this.doc.pages[p]; return "/api/docs/" + this.doc.id + "/pages/" + p + "/image?v=" + encodeURIComponent(s.rev || s.image + s.width); },
       running() { return !!this.doc && !!this.doc.job && (this.doc.job.state === "running" || this.doc.job.state === "queued"); },
       allIn(states) { const pages = this.presentPages(); return pages.length > 0 && pages.every((p) => states.includes(this.doc.pages[p].state)); },
       stepDone(n) {
