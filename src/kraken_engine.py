@@ -23,6 +23,28 @@ _lock = threading.Lock()   # one scan at a time on the models (the GPU is shared
 KEEP_SECONDS = int(os.environ.get("MADOC_KRAKEN_KEEP_SECONDS", "900"))
 _last_use = [0.0]
 _watcher = []
+# CPU threads of kraken (None: kraken's default, 1, which gives exactly the PageXML of the command line); the
+# Settings page of the web application changes it (MADOC_KRAKEN_THREADS at start)
+THREADS = int(os.environ["MADOC_KRAKEN_THREADS"]) if os.environ.get("MADOC_KRAKEN_THREADS", "").isdigit() else None
+
+
+def _options():
+    return {"num_threads": THREADS} if THREADS else {}
+
+
+def loaded():
+    """What is kept loaded now: [{"kind", "model", "device"}] (Monitoring page)."""
+    # no lock: it is held for the whole of a scan, and this is read while a scan runs
+    return [{"kind": kind, "model": Path(path).name, "device": device} for kind, path, device in list(_models)]
+
+
+def release():
+    """Let the models go now (Settings page, "Release the models") -> how many were loaded."""
+    with _lock:
+        count = len(_models)
+        _models.clear()
+    _free_gpu_cache()
+    return count
 
 
 def enabled():
@@ -107,7 +129,7 @@ def segment(image_file, model, device="cpu"):
     from kraken.lib.util import open_image
 
     accelerator, devices = _device(device)
-    config = SegmentationInferenceConfig(accelerator=accelerator, device=devices)
+    config = SegmentationInferenceConfig(accelerator=accelerator, device=devices, **_options())
     image = open_image(str(image_file))
     with _lock, _threads(config):
         try:
@@ -128,7 +150,7 @@ def recognize(xml_file, model, device="cpu", pagexml=True):
     accelerator, devices = _device(device)
     # bidi_reordering=None is what `kraken ... ocr` uses without --base-dir (its ocr command replaces True by the
     # base direction given, None): the lines come out in the visual order that recognition.py turns back
-    config = RecognitionInferenceConfig(accelerator=accelerator, device=devices, bidi_reordering=None)
+    config = RecognitionInferenceConfig(accelerator=accelerator, device=devices, bidi_reordering=None, **_options())
     page = XMLPage(str(xml_file))
     segmentation = page.to_container()
     image = open_image(page.imagename)

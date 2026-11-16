@@ -1055,3 +1055,43 @@ def test_parse_pagexml_odd_values():
     assert a["text"] == "نص" and a["polygon"] == [[1, 2], [5, 6]] and a["baseline"] == [[1, 1], [2, 2]]
     assert abs(a["confidence"] - 0.6) < 1e-9
     assert b["confidence"] is None and c["id"] == "line_3" and c["text"] == "" and c["confidence"] == 0.9
+
+def test_app_shows_every_stage_and_checks_the_spelling_on_demand(tmp_path, monkeypatch):
+    """The interface run yields the segmentation, then the text, then the record; the spelling is not checked
+    by the run: spell_document checks the current text when asked and applies nothing."""
+    pytest.importorskip("gradio")
+    import app
+    import spelling_checker as sc
+    from PIL import Image
+    text = (ROOT / "samples" / "6.txt").read_text(encoding="utf-8")
+    lines = [{"id": f"l{i}", "text": l, "confidence": 0.9, "polygon": [(0, 0), (9, 0), (9, 9)], "baseline": []}
+             for i, l in enumerate(text.rstrip("\n").split("\n"))]
+    monkeypatch.setattr(app, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(app, "segment_image", lambda *a, **k: "<xml/>")
+    monkeypatch.setattr(app, "parse_pagexml", lambda xml: [dict(l, text="") for l in lines])
+    monkeypatch.setattr(app, "recognize_lines", lambda *a, **k: [dict(l) for l in lines])
+    asked = []
+    monkeypatch.setattr(app, "propose", lambda base: asked.append(base) or sc.propose(base))
+    monkeypatch.setattr(sc, "OLLAMA_URL", "http://127.0.0.1:9")            # rules only
+    scan = tmp_path / "scan.jpg"
+    Image.new("RGB", (40, 20)).save(scan)
+    options = app.options_of(False, False, False, True)
+    stages = list(app.document_stages(str(scan), "scan.jpg", options, 0.8, "cpu", "m1", "m2"))
+    assert [name for name, _ in stages] == ["segmentation", "recognition", "formatting"]
+    first, second, doc = (d for _, d in stages)
+    assert len(first["lines"]) == len(lines) and not any(l["text"] for l in first["lines"])
+    assert app.segmentation_linked(first) and first["busy"] and "record" not in first
+    htr = app.transcription(lines)
+    assert second["history"] == [htr] and "record" not in second and second["busy"]
+    assert doc["record"] and doc["files"]["json"] and not doc["busy"]
+    assert not asked and "البيتت" in doc["history"][-1]                     # the run did not check the spelling
+    for view in (first, second, doc):                                      # every stage can be shown
+        assert app.segmentation_html(view, 1.0, 0.8) and app.text_html(view, 0.8) and app.console_html(view, 0.8)
+        assert app.record_html(view) is not None
+    checked, spelling = app.spell_document(doc, options)
+    assert asked == [htr] and checked["history"] == doc["history"]         # proposed, not applied
+    fix = next(c for c in spelling["changes"] if c["old"] == ["البيتت"])
+    assert fix["accepted"]
+    applied = app.set_text(checked, app.apply_changes(spelling["text"], spelling["changes"],
+                                                      set(spelling["accepted"])), options, "c_spelling")
+    assert "البيتت" not in applied["history"][-1]

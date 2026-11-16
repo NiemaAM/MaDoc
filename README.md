@@ -147,7 +147,7 @@ On the GPU machine MaDoc runs in two containers (`docker-compose.yml`):
 
 | Container | What it runs | GPU | Reachable from |
 |---|---|---|---|
-| `madoc` | the web interface: kraken, the NER models (image built from `Dockerfile`, models included) | yes | `127.0.0.1:7860`, published by the Tailscale funnel |
+| `madoc` | the web application (`src/server.py`): kraken, the NER models (image built from `Dockerfile`, models included) | yes | `127.0.0.1:7860`, published by the Tailscale funnel |
 | `madoc-ollama` | Ollama with the spelling / translation model (Gemma) | yes | `madoc`, and the MLOps worker through the `madoc-shared` network (to unload Gemma before a training) |
 
 Prerequisites: the NVIDIA driver, Docker and the NVIDIA Container Toolkit on the host. The complete setup of the
@@ -166,7 +166,8 @@ docker compose logs -f madoc                         # the output of the app
 
 `.env` is read by the `madoc` container (`MADOC_AUTH`, `HF_TOKEN`, `MADOC_SPELL_MODEL`, …). `MADOC_OLLAMA_URL` is
 set by `docker-compose.yml` to the Ollama container. The NER models are downloaded at the first start into the
-`hf-cache` volume.
+`hf-cache` volume. The settings saved in the application and the acts being worked on are in the `madoc-data`
+volume (`/data`); an act is deleted after its retention (Settings, one hour by default).
 
 **Deployment.** The `deploy` workflow (`.github/workflows/deploy.yml`) builds the image on every push to
 `master`, tags it with its commit, runs the tests inside it, restarts the containers and checks the app answers.
@@ -181,6 +182,52 @@ A new model reaches MaDoc as a pull request from the MLOps platform (it changes 
 `models/MODEL_CARD.json`): merging it deploys the model, reverting it rolls it back.
 
 ## Using the web interface
+
+```bash
+python src/server.py                                # http://127.0.0.1:7860
+python src/server.py --host 0.0.0.0 --device cuda:0 # reachable from the network, on the GPU
+MADOC_AUTH=ana:1234 python src/server.py            # a login is asked (several: ana:1234,sara:abcd)
+python src/server.py --segmentation-model path/blla.mlmodel --recognition-model path/htr.mlmodel
+python src/server.py --data-dir /srv/madoc          # where the acts and the settings are kept (MADOC_DATA_DIR)
+```
+
+An **act** is page 2 of the register (the details: the record is read from it) and, when wanted, page 1 (the
+names and the marginal notes). The interface is a wizard in four steps; every result is shown as soon as its
+step ends, and a bar says which step is running.
+
+| Step | What it shows | What can be done |
+|---|---|---|
+| 1. Pages | the two scans | choose a file or take a photo (the camera of the computer or of the phone) for each page |
+| 2. Lines | the lines found, drawn on the scan | select a line, move it or its points (double-click: add / remove a point), turn it into a rectangle, delete it, draw a missing one, undo (Ctrl+Z); find the lines again |
+| 3. Text | one field per line, with its confidence | correct a line; read again the changed lines or all of them; check the spelling (only when its button is clicked) and choose which proposals to apply |
+| 4. Record | the fields in Arabic and French, the validation, what the two pages say | correct a field (kept when the text is read again), translate with the local model, download the JSON, the text, the PageXML or everything |
+
+With page 1, the act number and the child's names of both pages are compared (a difference is a warning of the
+validation; a field page 2 does not give is taken from page 1), the lines under its header become the marginal
+notes (`TEXTEMENTIONS` for the Arabic lines, `TEXTEMENTIONSFR` for the lines in Latin script), and a French name
+of a parent written there (`Fils de … et de …`, `Père : …`, `Mère : …`) replaces the translated one.
+
+Only the lines changed in step 2 are read again, the local model (Ollama) is only called by its two buttons
+(spelling, translation) unless Settings says otherwise, and the kraken models are let go after a time without a
+scan.
+
+**Settings** (kept in `<data dir>/settings.json`): the device (automatic, CPU or a GPU), the CPU threads of
+kraken, how long the models stay loaded and a button to release them now, whether the steps run in a row after
+*Start*, the NER models, the automatic translation, the confidence threshold, the Ollama models, and how many
+hours an act is kept.
+
+**Monitoring**: CPU, memory, GPU load / memory / temperature and the queue over the last 5, 15 or 60 minutes,
+the loaded models, and the duration of every step (count, mean, 95th percentile, errors). The same numbers are
+at `/metrics` in the Prometheus format, for a Grafana of your own; `/healthz` answers without a login.
+
+The server is one process (the queue of the runs and the loaded models live in it): one run at a time, the
+others wait. The log has one line per step (its duration, the device, the number of lines), never the text of
+an act.
+
+### The previous interface (Gradio)
+
+`src/app.py` is the interface MaDoc had before `src/server.py`. It still runs (one scan at a time; no page 1,
+line editor, settings or monitoring):
 
 ```bash
 python src/app.py                                   # http://127.0.0.1:7860
@@ -334,7 +381,9 @@ certificate; fields ending in `FR` hold the French value. Example, from the anon
   "ANNEEDECLA": "2017",
   "EMPLOYECREANT": "فؤاد السعدي موظف جماعي",
   "BECNAME": "بالتفويض",
-  "BECNAMEFR": "PAR DELEGATION"
+  "BECNAMEFR": "PAR DELEGATION",
+  "TEXTEMENTIONS": "",
+  "TEXTEMENTIONSFR": ""
 }
 ```
 
@@ -588,7 +637,12 @@ is the case in CI.
 ```
 madoc/
 ├── src/
-│   ├── app.py               web interface (Gradio)
+│   ├── server.py            the web application (FastAPI): python src/server.py
+│   ├── madoc_web/           its code: api.py (routes), jobs.py (one worker: the runs), process.py (the steps),
+│   │                        store.py (the acts on disk), pageone.py (page 1: names, marginal notes),
+│   │                        pagexml.py, config.py (settings), monitor.py (resources, /metrics), static/ (the
+│   │                        interface: index.html, app.js, editor.js, i18n.js, app.css, vendor/alpine.min.js)
+│   ├── app.py               the previous interface (Gradio)
 │   ├── ui_text.py           texts of the interface in English, French and Arabic
 │   ├── pipeline.py          runs the whole chain
 │   ├── segmentation.py      stage 0a: image → PageXML
