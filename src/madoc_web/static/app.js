@@ -24,7 +24,8 @@
     let ed = null;          // the LineEditor: kept out of Alpine's reactive state (it holds DOM nodes)
     return {
       // ---- state ----
-      lang: "en", view: "docs", loading: false, toasts: [],
+      lang: "en", view: "docs", loading: false, toasts: [], theme: "system", systemDark: false,
+      dropping: null, runStarted: 0, lastDuration: null,
       docs: [], retention: 1, meta: null,
       doc: null, step: 1, page: "2", follow: 0, mode: "select", selected: null, canUndo: false,
       saving: false, uploading: null, accepted: [],
@@ -39,6 +40,14 @@
         try { saved = localStorage.getItem("madoc-lang"); } catch (_) { /* storage blocked */ }
         const wanted = saved || (navigator.language || "en").slice(0, 2);
         this.setLang(LANGS.includes(wanted) ? wanted : "en");
+        let theme = null;
+        try { theme = localStorage.getItem("madoc-theme"); } catch (_) { /* storage blocked */ }
+        this.theme = ["light", "dark"].includes(theme) ? theme : "system";
+        const dark = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+        if (dark) {
+          this.systemDark = dark.matches;
+          dark.addEventListener("change", (e) => { this.systemDark = e.matches; this.$nextTick(() => { if (ed) ed.render(); }); });
+        }
         window.addEventListener("hashchange", () => this.route());
         window.addEventListener("resize", () => { if (ed) ed.render(); });
         // the keys of the line editor (Delete, Escape, Ctrl+Z) work wherever the focus is, but in a field
@@ -56,6 +65,16 @@
         document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
         try { localStorage.setItem("madoc-lang", lang); } catch (_) { /* storage blocked */ }
       },
+      setTheme(theme) {
+        this.theme = theme;
+        if (theme === "system") document.documentElement.removeAttribute("data-theme");
+        else document.documentElement.setAttribute("data-theme", theme);
+        try { if (theme === "system") localStorage.removeItem("madoc-theme"); else localStorage.setItem("madoc-theme", theme); }
+        catch (_) { /* storage blocked: the choice lasts until the page is closed */ }
+        this.$nextTick(() => { if (ed) ed.render(); });       // the lines take their colours from the theme
+      },
+      isDark() { return this.theme === "dark" || (this.theme === "system" && this.systemDark); },
+      logoUrl() { return this.isDark() ? "/logo/dark" : "/logo/text"; },
       t(key, values) {
         const entry = window.MADOC_TEXT[key];
         if (!entry) return key;
@@ -106,9 +125,18 @@
         return this.t("st_draft");
       },
       docChip(d) {
-        if (d.job === "error") return "bad";
-        if (d.job === "running" || d.job === "queued") return "warn";
-        return d.valid === true ? "ok" : (d.valid === false ? "warn" : "");
+        if (d.job === "error") return "removed";
+        if (d.job === "running" || d.job === "queued") return "progress";
+        return d.valid === true ? "success" : (d.valid === false ? "moved" : "");
+      },
+      summary() {          // the open act, in the shape of a row of the list (docState, docChip)
+        return { job: this.doc && this.doc.job ? this.doc.job.state : null, pages: this.presentPages(),
+          valid: this.doc && this.doc.report && !this.doc.stale ? this.doc.report.valid : null };
+      },
+      statusText() {
+        const job = this.doc && this.doc.job;
+        if (job && job.state === "error") return this.t("st_error");
+        return job && job.state === "done" ? this.t("st_done") : this.t("st_ready");
       },
       ago(at) {
         const minutes = Math.max(0, Math.round((Date.now() / 1000 - at) / 60));
@@ -120,7 +148,7 @@
       async openDoc(id) {
         if (this.doc && this.doc.id === id) return;
         this.stopPolling();
-        this.doc = null; ed = null; this.selected = null; this.accepted = []; this.pending = null;
+        this.doc = null; ed = null; this.selected = null; this.accepted = []; this.pending = null; this.lastDuration = null;
         try {
           const doc = await api("GET", "/api/docs/" + id);
           this.page = "2"; this.follow = 0; this.mode = "select";
@@ -218,6 +246,12 @@
         if (this.step === 2) return this.needsRead() ? this.t("read_text") : this.t("to_text");
         return !this.doc.record || this.doc.stale ? this.t("extract") : this.t("to_record");
       },
+      nextRuns() {          // the main button starts a run (true) or only moves to the next step (false)
+        if (!this.doc) return false;
+        if (this.step === 1) return !this.allIn(["segmented", "recognized"]);
+        if (this.step === 2) return this.needsRead();
+        return this.step === 3 && (!this.doc.record || this.doc.stale);
+      },
       async next() {
         if (this.step === 1) {
           if (this.allIn(["segmented", "recognized"])) return this.goStep(2);
@@ -234,6 +268,7 @@
         try {
           await this.flush();
           this.follow = follow || 0;
+          this.runStarted = Date.now();
           this.setDoc(await api("POST", "/api/docs/" + this.doc.id + "/run", { kind, ...(options || {}) }));
           if (this.running()) this.poll();
           else if (follow) this.step = Math.min(follow, this.bestStep());
@@ -254,7 +289,10 @@
               if (!this.doc || this.doc.id !== id) return;
               if (doc.job && doc.job.state !== "running" && doc.job.state !== "queued") this.stopPolling();
               this.setDoc(doc);
-              if (!this.running()) { this.follow = 0; this.syncEditor(); }
+              if (!this.running()) {
+                this.follow = 0; this.syncEditor();
+                if (this.runStarted) { this.lastDuration = (Date.now() - this.runStarted) / 1000; this.runStarted = 0; }
+              }
             }
           } catch (e) { if (e.status === 404) { this.stopPolling(); location.hash = "#/"; } else if (e.message !== "network") console.error(e); }
         }, 800);
@@ -281,6 +319,13 @@
           this.setDoc(await api("PUT", "/api/docs/" + this.doc.id + "/pages/" + p, form));
         } catch (e) { this.fail(e); }
         this.uploading = null;
+      },
+      drop(p, event) {
+        this.dropping = null;
+        const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+        if (!file || this.running() || this.uploading) return;
+        if (!file.type.startsWith("image/")) return this.toast(this.t("not_image"), "bad");
+        this.upload(p, file);
       },
       async removePage(p) {
         try { this.setDoc(await api("DELETE", "/api/docs/" + this.doc.id + "/pages/" + p)); } catch (e) { this.fail(e); }
@@ -367,6 +412,10 @@
         const mine = issues.filter((i) => i.field === row.ar || i.field === row.fr);
         return mine.some((i) => i.level === "error") ? "error" : (mine.length ? "warning" : "");
       },
+      rowIssue(row) {
+        const issues = (this.doc && this.doc.report && this.doc.report.issues) || [];
+        return issues.filter((i) => i.field === row.ar || i.field === row.fr).map((i) => i.field + ": " + i.message).join("\n");
+      },
       fieldLabel(field) {
         for (const [, label, ar, fr] of (this.meta ? this.meta.rows : [])) {
           if (field === ar || field === fr) return this.t("f_" + label) + (field === fr ? " (FR)" : "") + " · " + field;
@@ -403,35 +452,46 @@
         return h ? h + " h " + m + " min" : m + " min";
       },
       gb(bytes) { return (bytes / 1073741824).toFixed(1); },
-      spark(points, value, max, color) {
-        const since = this.mon.now - this.minutes * 60, W = 300, H = 70;
+      spark(points, value, max, color, unit) {
+        // a time series panel: three grid lines with their values, the area and the line of the series
+        const since = this.mon.now - this.minutes * 60, W = 260, H = 88, top = 4, bottom = H - 4, left = 30;
         const usable = points.map((p) => [p.at, value(p)]).filter((p) => p[1] !== null && p[1] !== undefined);
-        if (!usable.length) return "";
-        const top = max || Math.max(1, ...usable.map((p) => p[1])) * 1.15;
-        const xy = usable.map(([at, v]) => [Math.max(0, ((at - since) / (this.minutes * 60)) * W), H - 2 - (Math.min(v, top) / top) * (H - 6)]);
+        const ceiling = max || Math.max(1, ...usable.map((p) => p[1])) * 1.2;
+        const y = (v) => bottom - (Math.min(v, ceiling) / ceiling) * (bottom - top);
+        const x = (at) => left + Math.max(0, ((at - since) / (this.minutes * 60)) * (W - left));
+        const label = (v) => (unit === "%" ? Math.round(v) + "%" : unit === "GB" ? this.gb(v) : (v >= 10 ? Math.round(v) : v.toFixed(1)));
+        let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">`;
+        for (const f of [0, 0.5, 1]) {
+          const v = ceiling * f, yy = y(v).toFixed(1);
+          svg += `<line class="grid-line" x1="${left}" y1="${yy}" x2="${W}" y2="${yy}" vector-effect="non-scaling-stroke"/>` +
+            `<text x="${left - 4}" y="${(+yy + 3).toFixed(1)}" text-anchor="end">${label(v)}</text>`;
+        }
+        if (!usable.length) return svg + `<text class="no-data" x="${(left + W) / 2}" y="${H / 2}" text-anchor="middle">${this.t("mon_no_data")}</text></svg>`;
+        const xy = usable.map(([at, v]) => [x(at), y(v)]);
         const path = xy.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-        const area = path + ` L${xy[xy.length - 1][0].toFixed(1)} ${H} L${xy[0][0].toFixed(1)} ${H} Z`;
-        return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"><line x1="0" y1="${H - 1}" x2="${W}" y2="${H - 1}" stroke="currentColor" stroke-opacity=".15"/>` +
-          `<path d="${area}" fill="${color}" fill-opacity=".15"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`;
+        return svg + `<path d="${path} L${xy[xy.length - 1][0].toFixed(1)} ${bottom} L${xy[0][0].toFixed(1)} ${bottom} Z" style="fill:var(${color});fill-opacity:.14"/>` +
+          `<path d="${path}" style="fill:none;stroke:var(${color});stroke-width:1.75" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
       },
       tiles() {
         const points = this.mon.samples, last = points[points.length - 1] || {};
         const gpu = (last.gpus && last.gpus[0]) || null;
         const g = (key) => (p) => (p.gpus && p.gpus[0] ? p.gpus[0][key] : null);
+        const num = (v, unit) => (v === null || v === undefined ? "—" : v + (unit ? ` <small>${unit}</small>` : ""));
         const tiles = [
-          { key: "cpu", title: this.t("mon_cpu"), value: last.cpu === null || last.cpu === undefined ? "—" : Math.round(last.cpu) + " %",
-            chart: this.spark(points, (p) => p.cpu, 100, "#2456c9"), note: this.mon.cpu_count + " threads" },
-          { key: "mem", title: this.t("mon_memory"), value: last.memory_used ? this.gb(last.memory_used) + " / " + this.gb(last.memory_total) + " GB" : "—",
-            chart: this.spark(points, (p) => p.memory_used, last.memory_total, "#7a4fd0"),
+          { key: "cpu", title: this.t("mon_cpu"), value: num(last.cpu === undefined || last.cpu === null ? null : Math.round(last.cpu), "%"),
+            chart: this.spark(points, (p) => p.cpu, 100, "--chart-1", "%"), note: this.t("mon_threads", { n: this.mon.cpu_count }) },
+          { key: "mem", title: this.t("mon_memory"), value: last.memory_used ? num(this.gb(last.memory_used), "/ " + this.gb(last.memory_total) + " GB") : "—",
+            chart: this.spark(points, (p) => p.memory_used, last.memory_total, "--chart-2", "GB"),
             note: last.process_memory ? this.t("mon_process") + ": " + this.gb(last.process_memory) + " GB" : "" },
-          { key: "gpu", title: this.t("mon_gpu"), value: gpu && gpu.util !== null ? Math.round(gpu.util) + " %" : "—",
-            chart: this.spark(points, g("util"), 100, "#1a7f4b"), note: gpu ? gpu.name : this.t("mon_no_gpu") },
-          { key: "gmem", title: this.t("mon_gpu_memory"), value: gpu && gpu.memory_used !== null ? (gpu.memory_used / 1024).toFixed(1) + " / " + (gpu.memory_total / 1024).toFixed(1) + " GB" : "—",
-            chart: this.spark(points, g("memory_used"), gpu ? gpu.memory_total : null, "#c2571a"), note: gpu && gpu.power !== null ? Math.round(gpu.power) + " W" : "" },
-          { key: "temp", title: this.t("mon_gpu_temp"), value: gpu && gpu.temperature !== null ? Math.round(gpu.temperature) + " °C" : "—",
-            chart: this.spark(points, g("temperature"), 100, "#c0392b"), note: "" },
-          { key: "queue", title: this.t("mon_queue"), value: String(last.queue === undefined ? 0 : last.queue),
-            chart: this.spark(points, (p) => p.queue, null, "#667085"),
+          { key: "gpu", title: this.t("mon_gpu"), value: num(gpu && gpu.util !== null ? Math.round(gpu.util) : null, "%"),
+            chart: this.spark(points, g("util"), 100, "--chart-3", "%"), note: gpu ? gpu.name : this.t("mon_no_gpu") },
+          { key: "gmem", title: this.t("mon_gpu_memory"), value: gpu && gpu.memory_used !== null ? num((gpu.memory_used / 1024).toFixed(1), "/ " + (gpu.memory_total / 1024).toFixed(1) + " GB") : "—",
+            chart: this.spark(points, (p) => { const v = g("memory_used")(p); return v === null ? null : v * 1048576; }, gpu ? gpu.memory_total * 1048576 : null, "--chart-4", "GB"),
+            note: gpu && gpu.power !== null ? Math.round(gpu.power) + " W" : "" },
+          { key: "temp", title: this.t("mon_gpu_temp"), value: num(gpu && gpu.temperature !== null ? Math.round(gpu.temperature) : null, "°C"),
+            chart: this.spark(points, g("temperature"), 100, "--chart-5"), note: "" },
+          { key: "queue", title: this.t("mon_queue"), value: num(last.queue === undefined ? 0 : last.queue),
+            chart: this.spark(points, (p) => p.queue, null, "--chart-6"),
             note: last.disk_used ? this.t("mon_disk") + ": " + this.gb(last.disk_used) + " / " + this.gb(last.disk_total) + " GB" : "" },
         ];
         return gpu ? tiles : tiles.filter((tile) => tile.key !== "gmem" && tile.key !== "temp");

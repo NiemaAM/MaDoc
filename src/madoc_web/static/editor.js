@@ -84,12 +84,22 @@
       const shown = this.svg.getBoundingClientRect().width || 1;
       return this.width / shown;
     }
+    palette() {             // the colours of the theme (app.css: --poly-*), read at every drawing
+      const css = getComputedStyle(this.host);
+      const get = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+      return { ok: get("--poly-ok", "#22a06b"), low: get("--poly-low", "#c9372c"), unread: get("--poly-unread", "#2b3db5"),
+        dirty: get("--poly-dirty", "#d97008"), select: get("--poly-select", "#2b3db5"), label: get("--poly-label", "#44546f"),
+        handle: get("--surface", "#ffffff") };
+    }
     color(line) {
-      if (line.dirty) return "#d98200";
-      if (line.confidence === null || line.confidence === undefined) return "#5b7bd6";
-      return line.confidence < this.threshold ? "#d94f3d" : "#2f9e62";
+      const c = this.pal || this.palette();
+      if (line.dirty) return c.dirty;
+      if (line.confidence === null || line.confidence === undefined) return c.unread;
+      return line.confidence < this.threshold ? c.low : c.ok;
     }
     render() {
+      this.pal = this.palette();
+      const c = this.pal;
       const u = this.unit();
       const nodes = [];
       this.lines.forEach((line, index) => {
@@ -105,36 +115,37 @@
       const selected = this.mode !== "view" && this.lines.find((l) => l.id === this.selected);
       if (selected) {
         selected.polygon.forEach((p, i) => nodes.push(el("circle", { cx: p[0], cy: p[1], r: 4.5 * u, "data-handle": "v", "data-index": i,
-          fill: "#fff", stroke: "#2456c9", "stroke-width": 1.5 * u, style: "cursor:move; touch-action:none" })));
+          fill: c.handle, stroke: c.select, "stroke-width": 1.5 * u, style: "cursor:move; touch-action:none" })));
         selected.baseline.forEach((p, i) => nodes.push(el("rect", { x: p[0] - 4 * u, y: p[1] - 4 * u, width: 8 * u, height: 8 * u, "data-handle": "b",
-          "data-index": i, fill: "#ffd166", stroke: "#8a5a00", "stroke-width": 1.2 * u, style: "cursor:move; touch-action:none" })));
+          "data-index": i, fill: c.dirty, stroke: c.handle, "stroke-width": 1.2 * u, style: "cursor:move; touch-action:none" })));
       }
       if (this.drag && this.drag.kind === "draw") {
         const d = this.drag;
         nodes.push(el("rect", { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), width: Math.abs(d.x1 - d.x0), height: Math.abs(d.y1 - d.y0),
-          fill: "#2456c933", stroke: "#2456c9", "stroke-width": 1.5 * u, "stroke-dasharray": `${4 * u} ${3 * u}`, "pointer-events": "none" }));
+          fill: c.select, "fill-opacity": 0.18, stroke: c.select, "stroke-width": 1.5 * u, "stroke-dasharray": `${4 * u} ${3 * u}`, "pointer-events": "none" }));
       }
       this.layer.replaceChildren(...nodes);
       this.paint();
     }
     paint() {                       // colours only: cheap, done at every hover
+      const c = this.pal || this.palette();
       const u = this.unit();
       for (const line of this.lines) {
         const node = this.layer.querySelector(`polygon[data-id="${line.id}"]`);
         if (!node) continue;
         const color = this.color(line);
         const strong = line.id === this.selected || line.id === this.hovered || this.highlight.includes(line.id);
-        node.setAttribute("fill", color); node.setAttribute("stroke", line.id === this.selected ? "#2456c9" : color);
+        node.setAttribute("fill", color); node.setAttribute("stroke", line.id === this.selected ? c.select : color);
         node.setAttribute("fill-opacity", strong ? 0.45 : 0.14);
         node.setAttribute("stroke-width", (strong ? 2.5 : 1.2) * u);
         if (line.dirty) node.setAttribute("stroke-dasharray", `${5 * u} ${3 * u}`); else node.removeAttribute("stroke-dasharray");
         node.style.cursor = this.mode === "select" && line.id === this.selected ? "move" : (this.mode === "draw" ? "crosshair" : "pointer");
         if (this.mode === "select" && line.id === this.selected) node.style.touchAction = "none"; else node.style.touchAction = "";
         const base = this.layer.querySelector(`polyline[data-base="${line.id}"]`);
-        base.setAttribute("stroke", "#11111199"); base.setAttribute("stroke-width", 1 * u);
+        base.setAttribute("stroke", c.label); base.setAttribute("stroke-width", 1 * u);
         base.setAttribute("stroke-opacity", this.mode === "view" ? 0 : 0.7);
         const label = this.layer.querySelector(`text[data-label="${line.id}"]`);
-        label.setAttribute("fill", strong ? "#2456c9" : "#44506a"); label.setAttribute("font-weight", strong ? "700" : "400");
+        label.setAttribute("fill", strong ? c.select : c.label); label.setAttribute("font-weight", strong ? "700" : "400");
       }
     }
 

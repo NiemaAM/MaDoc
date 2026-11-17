@@ -3,9 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>MaDoc</title>
   <link rel="icon" href="/logo/icon">
   <link rel="stylesheet" href="/static/app.css">
+  <!-- the theme before the first paint (no flash of the wrong theme) -->
+  <script src="/static/theme.js"></script>
   <script defer src="/static/i18n.js"></script>
   <script defer src="/static/editor.js"></script>
   <script defer src="/static/app.js"></script>
@@ -13,445 +16,604 @@
 </head>
 <body x-data="madoc()" x-cloak>
 
-<header class="bar">
-  <a class="brand" href="#/"><img src="/logo/icon" alt="" onerror="this.remove()"><span>MaDoc</span></a>
-  <nav>
-    <a href="#/" :class="{on: view === 'docs' || view === 'doc'}" x-text="t('nav_docs')"></a>
-    <a href="#/settings" :class="{on: view === 'settings'}" x-text="t('nav_settings')"></a>
-    <a href="#/monitor" :class="{on: view === 'monitor'}" x-text="t('nav_monitor')"></a>
-  </nav>
-  <select class="lang" x-model="lang" @change="setLang(lang)" aria-label="Language">
-    <option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option>
+<!-- icons: one stroke set, used with <svg class="ic"><use href="#i-name"/></svg> -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 4h4M7 7l1 12a1.5 1.5 0 0 0 1.5 1.4h5A1.5 1.5 0 0 0 16 19l1-12M10.5 11v5M13.5 11v5"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7L5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-2"/></symbol>
+  <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M11 8.5v5M8.5 11h5"/></symbol>
+  <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M8.5 11h5"/></symbol>
+  <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M6 4l12 7-5.5 1.5L10 18z"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="10" rx="1"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16.5V20"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3.5H7a1.5 1.5 0 0 0-1.5 1.5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h6"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8l2 1.2 2.3-.2 1.2 2 2 1.2-.2 2.3 1.2 2-1.2 2 .2 2.3-2 1.2-1.2 2-2.3-.2-2 1.2-2-1.2-2.3.2-1.2-2-2-1.2.2-2.3-1.2-2 1.2-2-.2-2.3 2-1.2 1.2-2 2.3.2z"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.3"/></symbol>
+  <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16v.3"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.3"/></symbol>
+  <symbol id="i-success" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.3l2.5 2.5 4.5-5"/></symbol>
+  <symbol id="i-spell" viewBox="0 0 24 24"><path d="M4 15l3.5-9L11 15M5.3 12h4.4M13 6h3a2.25 2.25 0 0 1 0 4.5h-3V6zm0 4.5h3.5a2.25 2.25 0 0 1 0 4.5H13zM9 18.5l2 2 4-4"/></symbol>
+  <symbol id="i-translate" viewBox="0 0 24 24"><path d="M4 5.5h8M8 4v1.5c0 4-2 7-4.5 8.5M6 9c1 2 3 3.5 5 4.5M13 20l3.5-8.5L20 20M14.2 17.3h4.6"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 16l-5-5L6 19.5"/></symbol>
+  <symbol id="i-lines" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M5 19h3.5L18 9.5a1.8 1.8 0 0 0-3.5-3.5L5 15.5z"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M17 14v4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8.5A1.5 1.5 0 0 1 6.5 7H10"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/></symbol>
+</svg>
+
+<div class="app">
+<header class="topnav">
+  <a class="logo" href="#/" :aria-label="'MaDoc — ' + t('nav_docs')"><img :src="logoUrl()" alt="MaDoc" @error="$el.style.display='none'"></a>
+  <a class="navlink" href="#/" :class="{on: view === 'docs' || view === 'doc'}"><svg class="ic"><use href="#i-file"/></svg><span class="navlabel" x-text="t('nav_docs')"></span></a>
+  <a class="navlink" href="#/monitor" :class="{on: view === 'monitor'}"><svg class="ic"><use href="#i-activity"/></svg><span class="navlabel" x-text="t('nav_monitor')"></span></a>
+  <a class="navlink" href="#/settings" :class="{on: view === 'settings'}"><svg class="ic"><use href="#i-settings"/></svg><span class="navlabel" x-text="t('nav_settings')"></span></a>
+  <span class="grow"></span>
+  <div class="segmented" role="radiogroup" :aria-label="t('theme')">
+    <template x-for="m in ['light', 'dark', 'system']" :key="m">
+      <button class="btn icon" type="button" role="radio" :aria-checked="theme === m" :class="{on: theme === m}"
+              :title="t('theme_' + m)" :aria-label="t('theme_' + m)" @click="setTheme(m)">
+        <svg class="ic"><use :href="'#i-' + {light: 'sun', dark: 'moon', system: 'monitor'}[m]"/></svg>
+      </button>
+    </template>
+  </div>
+  <select x-model="lang" @change="setLang(lang)" :aria-label="t('language')">
+    <option value="en">EN</option><option value="fr">FR</option><option value="ar">ع</option>
   </select>
 </header>
 
-<main>
-  <!-- ============================== documents ============================== -->
-  <section x-show="view === 'docs'" class="page">
-    <div class="head">
-      <h1 x-text="t('docs_title')"></h1>
-      <button class="primary" @click="newDoc()" :disabled="loading" x-text="t('new_act')"></button>
+<!-- ============================== the acts ============================== -->
+<section x-show="view === 'docs'" class="page">
+  <div class="page-head">
+    <h1 x-text="t('docs_title')"></h1>
+    <span class="badge" x-text="docs.length"></span>
+    <span class="grow"></span>
+    <button class="btn brand" @click="newDoc()" :disabled="loading"><svg class="ic"><use href="#i-plus"/></svg><span x-text="t('new_act')"></span></button>
+    <p class="lede small" x-text="t('docs_hint', {hours: retention})"></p>
+  </div>
+  <div class="panel">
+    <div class="empty" x-show="!docs.length && !loading">
+      <svg class="ic xl"><use href="#i-file"/></svg>
+      <h2 x-text="t('docs_empty_title')"></h2>
+      <p x-text="t('docs_empty')"></p>
+      <button class="btn primary" @click="newDoc()"><svg class="ic"><use href="#i-plus"/></svg><span x-text="t('new_act')"></span></button>
     </div>
-    <p class="hint" x-text="t('docs_hint', {hours: retention})"></p>
-    <div class="empty" x-show="!docs.length && !loading" x-text="t('docs_empty')"></div>
-    <table class="list" x-show="docs.length">
+    <table class="grid" x-show="docs.length">
       <thead><tr><th x-text="t('th_name')"></th><th x-text="t('f_act_number')"></th><th x-text="t('th_pages')"></th>
-        <th x-text="t('th_state')"></th><th x-text="t('th_used')"></th><th></th></tr></thead>
+        <th x-text="t('th_state')"></th><th x-text="t('th_used')"></th><th class="w-icon"></th></tr></thead>
       <tbody>
         <template x-for="d in docs" :key="d.id">
           <tr>
-            <td><a :href="'#/doc/' + d.id" x-text="d.name || t('untitled')"></a></td>
-            <td x-text="d.act || '—'"></td>
-            <td x-text="d.pages.length ? d.pages.slice().sort().join(' + ') : '—'"></td>
-            <td><span class="chip" :class="docChip(d)" x-text="docState(d)"></span></td>
-            <td x-text="ago(d.updated)"></td>
-            <td class="end"><button class="ghost danger" @click="removeDoc(d)" x-text="t('delete')"></button></td>
+            <td><a dir="auto" :href="'#/doc/' + d.id" x-text="d.name || t('untitled')"></a></td>
+            <td class="mono" x-text="d.act || '—'"></td>
+            <td class="muted" x-text="d.pages.length ? d.pages.slice().sort().join(' + ') : '—'"></td>
+            <td><span class="lozenge" :class="docChip(d)" x-text="docState(d)"></span></td>
+            <td class="muted" x-text="ago(d.updated)"></td>
+            <td class="w-icon"><button class="btn subtle icon compact" @click="removeDoc(d)" :title="t('delete')" :aria-label="t('delete')"><svg class="ic"><use href="#i-trash"/></svg></button></td>
           </tr>
         </template>
       </tbody>
     </table>
-  </section>
+  </div>
+</section>
 
-  <!-- ============================== one document: the wizard ============================== -->
-  <section x-show="view === 'doc'" class="page wide">
-    <template x-if="doc">
-      <div>
-        <ol class="steps">
-          <template x-for="n in [1, 2, 3, 4]" :key="n">
-            <li :class="{on: step === n, done: stepDone(n), off: !stepOpen(n)}" @click="goStep(n)">
-              <span class="num" x-text="stepDone(n) && step !== n ? '✓' : n"></span>
-              <span x-text="t('step_' + n)"></span>
-            </li>
-          </template>
-        </ol>
+<!-- ============================== one act ============================== -->
+<section x-show="view === 'doc'">
+  <template x-if="doc">
+    <div class="ws">
+      <div class="ws-head">
+        <nav class="crumbs" :aria-label="t('nav_docs')">
+          <a href="#/" x-text="t('nav_docs')"></a><span>/</span><strong dir="auto" x-text="doc.name || t('untitled')"></strong>
+        </nav>
+        <span class="lozenge" :class="docChip(summary())" x-text="docState(summary())"></span>
+        <span class="grow"></span>
+        <button class="btn" x-show="step > 1" @click="goStep(step - 1)"><svg class="ic flip"><use href="#i-left"/></svg><span x-text="t('back')"></span></button>
+        <button class="btn primary" x-show="step < 4" @click="next()" :disabled="running() || !canNext()">
+          <span class="spin" x-show="running()"></span>
+          <svg class="ic" x-show="!running() && nextRuns()"><use href="#i-play"/></svg>
+          <span x-text="nextLabel()"></span>
+          <svg class="ic flip" x-show="!running() && !nextRuns()"><use href="#i-right"/></svg>
+        </button>
+        <button class="btn brand" x-show="step === 4" @click="newDoc()"><svg class="ic"><use href="#i-plus"/></svg><span x-text="t('new_act')"></span></button>
+      </div>
 
-        <div class="progress" x-show="running()">
-          <span class="spinner"></span>
-          <span x-text="jobLabel()"></span>
-          <div class="track"><div class="fill" :style="'width:' + jobPercent() + '%'"></div></div>
-        </div>
-        <div class="banner bad" x-show="doc.job && doc.job.state === 'error'">
-          <span x-text="t('run_failed') + ' ' + (doc.job ? doc.job.error : '')"></span>
+      <div class="tabs" role="tablist">
+        <template x-for="n in [1, 2, 3, 4]" :key="n">
+          <button class="tab" role="tab" :aria-selected="step === n" :class="{on: step === n, done: stepDone(n) && step !== n}"
+                  :disabled="!stepOpen(n)" @click="goStep(n)">
+            <span class="n"><template x-if="stepDone(n) && step !== n"><svg class="ic"><use href="#i-check"/></svg></template>
+              <template x-if="!(stepDone(n) && step !== n)"><span x-text="n"></span></template></span>
+            <span x-text="t('step_' + n)"></span>
+            <span class="badge" x-show="n === 2 && lines().length" x-text="lines().length"></span>
+            <span class="dot red" x-show="n === 2 && dirtyCount()" :title="t('to_read', {n: dirtyCount()})"></span>
+            <span class="dot red" x-show="n === 4 && doc.stale && doc.record" :title="t('stale')"></span>
+          </button>
+        </template>
+      </div>
+      <div class="indeterminate" x-show="running()" role="progressbar" :aria-label="jobLabel()"></div>
+
+      <div class="ws-body">
+        <div class="message error" x-show="doc.job && doc.job.state === 'error'" role="alert">
+          <svg class="ic l"><use href="#i-error"/></svg>
+          <div><strong x-text="t('run_failed')"></strong><span x-text="doc.job ? doc.job.error : ''"></span></div>
         </div>
 
         <!-- step 1: the pages -->
         <div x-show="step === 1">
-          <p class="hint" x-text="t('pages_hint')"></p>
-          <div class="cards">
+          <div class="pages">
             <template x-for="p in ['2', '1']" :key="p">
-              <div class="card page-card" :class="{filled: has(p)}">
-                <div class="card-head">
-                  <strong x-text="t('page_' + p)"></strong>
-                  <span class="chip" :class="p === '2' ? 'warn' : ''" x-text="p === '2' ? t('required') : t('optional')"></span>
-                </div>
-                <p class="hint" x-text="t('page_' + p + '_hint')"></p>
-                <div class="thumb">
-                  <template x-if="has(p)"><img :src="imageUrl(p)" alt=""></template>
-                  <template x-if="!has(p)"><span x-text="uploading === p ? t('uploading') : t('no_scan')"></span></template>
-                  <span class="spinner over" x-show="uploading === p"></span>
-                </div>
-                <div class="row">
-                  <label class="button" :class="{disabled: running() || uploading}">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 x-text="t('page_' + p)"></h2>
+                  <span class="lozenge" :class="p === '2' ? 'progress' : ''" x-text="p === '2' ? t('required') : t('optional')"></span>
+                  <span class="grow"></span>
+                  <label class="btn" :class="{disabled: running() || !!uploading}" :title="t('choose_file')">
                     <input type="file" accept="image/*" hidden :disabled="running() || !!uploading"
                            @change="upload(p, $event.target.files[0]); $event.target.value = ''">
-                    <span x-text="has(p) ? t('replace') : t('choose_file')"></span>
+                    <svg class="ic"><use href="#i-upload"/></svg><span x-text="has(p) ? t('replace') : t('choose_file')"></span>
                   </label>
-                  <button @click="openCamera(p)" :disabled="running() || !!uploading" x-text="t('camera')"></button>
-                  <button class="ghost danger" x-show="has(p)" @click="removePage(p)" :disabled="running()" x-text="t('remove')"></button>
+                  <button class="btn" @click="openCamera(p)" :disabled="running() || !!uploading"><svg class="ic"><use href="#i-camera"/></svg><span x-text="t('camera')"></span></button>
+                  <button class="btn subtle icon" x-show="has(p)" @click="removePage(p)" :disabled="running()" :title="t('remove')" :aria-label="t('remove')"><svg class="ic"><use href="#i-trash"/></svg></button>
+                </div>
+                <div class="drop" :class="{over: dropping === p, filled: has(p)}"
+                     @dragover.prevent="dropping = p" @dragleave="dropping = null" @drop.prevent="drop(p, $event)">
+                  <template x-if="has(p)"><img :src="imageUrl(p)" :alt="t('page_' + p)"></template>
+                  <template x-if="!has(p) && uploading !== p">
+                    <div class="hint-in">
+                      <svg class="ic xl"><use href="#i-image"/></svg>
+                      <strong x-text="t('drop_here')"></strong>
+                      <span class="small" x-text="t('page_' + p + '_hint')"></span>
+                    </div>
+                  </template>
+                  <span class="spin" x-show="uploading === p"></span>
+                </div>
+                <div class="file-meta">
+                  <template x-if="has(p)">
+                    <span class="row"><svg class="ic"><use href="#i-image"/></svg>
+                      <span class="name" x-text="doc.pages[p].name"></span>
+                      <span x-text="doc.pages[p].width + ' × ' + doc.pages[p].height + ' px'"></span></span>
+                  </template>
+                  <template x-if="!has(p)"><span x-text="t('formats', {mb: meta ? meta.max_upload_mb : 25})"></span></template>
                 </div>
               </div>
             </template>
           </div>
         </div>
 
-        <!-- steps 2 to 4: the scan on one side, the work on the other -->
+        <!-- steps 2 to 4 -->
         <div class="split" x-show="step > 1">
-          <div class="pane scan">
-            <div class="toolbar">
-              <div class="tabs">
+          <div class="panel scan-panel">
+            <div class="panel-head">
+              <div class="segmented" role="tablist">
                 <template x-for="p in presentPages()" :key="p">
-                  <button :class="{on: page === p}" @click="setPage(p)" x-text="t('page_short', {n: p})"></button>
+                  <button class="btn" :class="{on: page === p}" @click="setPage(p)" x-text="t('page_short', {n: p})"></button>
                 </template>
               </div>
               <span class="grow"></span>
               <template x-if="step === 2">
-                <span class="row tight">
-                  <button :class="{on: mode === 'select'}" @click="setMode('select')" :disabled="running()" :title="t('tip_select')" x-text="t('tool_select')"></button>
-                  <button :class="{on: mode === 'draw'}" @click="setMode('draw')" :disabled="running()" :title="t('tip_draw')" x-text="t('tool_draw')"></button>
-                  <button @click="boxLine()" :disabled="running() || !selected" :title="t('tip_box')" x-text="t('tool_box')"></button>
-                  <button class="danger" @click="deleteLine()" :disabled="running() || !selected" x-text="t('delete')"></button>
-                  <button @click="undoEdit()" :disabled="running() || !canUndo" :title="t('undo')">↶</button>
-                </span>
+                <div class="toolbar">
+                  <div class="segmented">
+                    <button class="btn icon" :class="{on: mode === 'select'}" @click="setMode('select')" :disabled="running()" :title="t('tip_select')" :aria-label="t('tool_select')"><svg class="ic"><use href="#i-cursor"/></svg></button>
+                    <button class="btn icon" :class="{on: mode === 'draw'}" @click="setMode('draw')" :disabled="running()" :title="t('tip_draw')" :aria-label="t('tool_draw')"><svg class="ic"><use href="#i-pen"/></svg></button>
+                  </div>
+                  <button class="btn subtle icon" @click="boxLine()" :disabled="running() || !selected" :title="t('tip_box')" :aria-label="t('tool_box')"><svg class="ic"><use href="#i-box"/></svg></button>
+                  <button class="btn subtle icon" @click="deleteLine()" :disabled="running() || !selected" :title="t('delete')" :aria-label="t('delete')"><svg class="ic"><use href="#i-trash"/></svg></button>
+                  <button class="btn subtle icon" @click="undoEdit()" :disabled="running() || !canUndo" :title="t('undo') + ' (Ctrl+Z)'" :aria-label="t('undo')"><svg class="ic"><use href="#i-undo"/></svg></button>
+                  <span class="divider"></span>
+                </div>
               </template>
-              <button @click="zoom(-1)" :title="t('zoom_out')">−</button>
-              <button @click="zoom(1)" :title="t('zoom_in')">+</button>
+              <button class="btn subtle icon" @click="zoom(-1)" :title="t('zoom_out')" :aria-label="t('zoom_out')"><svg class="ic"><use href="#i-zoom-out"/></svg></button>
+              <button class="btn subtle icon" @click="zoom(1)" :title="t('zoom_in')" :aria-label="t('zoom_in')"><svg class="ic"><use href="#i-zoom-in"/></svg></button>
             </div>
             <div class="canvas" x-ref="canvas"></div>
-            <div class="status">
-              <span x-text="t('lines_count', {n: lines().length})"></span>
-              <span class="chip warn" x-show="dirtyCount()" x-text="t('to_read', {n: dirtyCount()})"></span>
-              <span class="chip" x-show="saving" x-text="t('saving')"></span>
-              <span class="hint" x-show="step === 2" x-text="t('lines_help')"></span>
-            </div>
           </div>
 
-          <div class="pane work">
+          <div class="panel work-panel">
             <!-- step 2: the lines -->
-            <div x-show="step === 2">
-              <h2 x-text="t('step_2')"></h2>
-              <p class="hint" x-text="t('lines_hint')"></p>
-              <div class="row">
-                <button @click="run('segment', {pages: [page]})" :disabled="running()" x-text="t('segment_again')"></button>
-                <button @click="run('recognize', {pages: [page]})" :disabled="running() || !lines().length" x-text="t('read_all')"></button>
+            <template x-if="step === 2">
+              <div>
+                <div class="panel-head">
+                  <h2 x-text="t('step_2')"></h2><span class="badge" x-text="lines().length"></span>
+                  <span class="grow"></span>
+                  <button class="btn" @click="run('segment', {pages: [page]})" :disabled="running()"><svg class="ic"><use href="#i-refresh"/></svg><span x-text="t('segment_again')"></span></button>
+                  <button class="btn" @click="run('recognize', {pages: [page]})" :disabled="running() || !lines().length"><svg class="ic"><use href="#i-refresh"/></svg><span x-text="t('read_all')"></span></button>
+                </div>
+                <div class="section muted small" x-text="t('lines_hint')"></div>
+                <table class="grid">
+                  <tbody>
+                    <template x-for="(l, i) in lines()" :key="l.id">
+                      <tr :class="{sel: selected === l.id}" @click="select(l.id)" @mouseenter="hover(l.id)" @mouseleave="hover(null)" style="cursor:pointer">
+                        <td class="num" x-text="i + 1"></td>
+                        <td><span class="line-text" :class="{dirty: l.dirty}" dir="auto" x-text="l.text || (l.dirty ? t('not_read') : '…')"></span></td>
+                        <td class="w-icon"><span class="dot red" x-show="l.dirty" :title="t('not_read')"></span></td>
+                        <td class="w-icon"><button class="btn subtle icon compact" @click.stop="deleteLine(l.id)" :disabled="running()" :title="t('delete')" :aria-label="t('delete')"><svg class="ic"><use href="#i-x"/></svg></button></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div class="empty" x-show="!lines().length"><svg class="ic xl"><use href="#i-lines"/></svg><p x-text="t('no_lines')"></p></div>
               </div>
-              <ul class="plain">
-                <template x-for="(l, i) in lines()" :key="l.id">
-                  <li class="line-row" :class="{sel: selected === l.id, dirty: l.dirty}" @click="select(l.id)"
-                      @mouseenter="hover(l.id)" @mouseleave="hover(null)">
-                    <span class="n" x-text="i + 1"></span>
-                    <span class="txt" dir="auto" x-text="l.text || (l.dirty ? t('not_read') : '…')"></span>
-                    <button class="ghost danger" @click.stop="deleteLine(l.id)" :disabled="running()" :title="t('delete')">✕</button>
-                  </li>
-                </template>
-              </ul>
-            </div>
+            </template>
 
             <!-- step 3: the text -->
-            <div x-show="step === 3">
-              <h2 x-text="t('step_3')"></h2>
-              <div class="row">
-                <button @click="run('spelling')" :disabled="running() || page !== '2' || !lines().length" x-text="t('check_spelling')"></button>
-                <button @click="run('recognize', {pages: [page]})" :disabled="running() || !lines().length" x-text="t('read_all')"></button>
-                <span class="hint" x-text="t('text_hint')"></span>
-              </div>
-              <div class="card spell" x-show="doc.spelling && page === '2'">
-                <div class="card-head"><strong x-text="t('spelling_title')"></strong>
-                  <span class="chip" x-text="(doc.spelling ? doc.spelling.changes.length : 0)"></span></div>
-                <p class="hint" x-show="doc.spelling && !doc.spelling.changes.length" x-text="t('spelling_none')"></p>
-                <template x-for="note in (doc.spelling ? doc.spelling.notes : [])" :key="note">
-                  <p class="hint" x-text="note"></p>
-                </template>
-                <ul class="plain">
-                  <template x-for="(c, i) in (doc.spelling ? doc.spelling.changes : [])" :key="i">
-                    <li class="change" @mouseenter="hover(c.line_id)" @mouseleave="hover(null)">
-                      <label><input type="checkbox" :checked="accepted.includes(i)" @change="toggleChange(i)">
-                        <span dir="auto" x-text="c.label"></span></label>
-                    </li>
-                  </template>
-                </ul>
-                <div class="row">
-                  <button class="primary" @click="applySpelling()" :disabled="running() || !accepted.length" x-text="t('apply_n', {n: accepted.length})"></button>
-                  <button @click="dropSpelling()" :disabled="running()" x-text="t('close')"></button>
+            <template x-if="step === 3">
+              <div>
+                <div class="panel-head">
+                  <h2 x-text="t('step_3')"></h2>
+                  <span class="grow"></span>
+                  <button class="btn" @click="run('spelling')" :disabled="running() || page !== '2' || !lines().length" :title="page !== '2' ? t('spelling_page2') : ''"><svg class="ic"><use href="#i-spell"/></svg><span x-text="t('check_spelling')"></span></button>
+                  <button class="btn subtle icon" @click="run('recognize', {pages: [page]})" :disabled="running() || !lines().length" :title="t('read_all')" :aria-label="t('read_all')"><svg class="ic"><use href="#i-refresh"/></svg></button>
                 </div>
+                <div class="section" x-show="doc.spelling && page === '2'">
+                  <div class="message info">
+                    <svg class="ic l"><use href="#i-spell"/></svg>
+                    <div style="flex:1; min-width:0">
+                      <strong x-text="t('spelling_title') + ' (' + (doc.spelling ? doc.spelling.changes.length : 0) + ')'"></strong>
+                      <p class="small" x-show="doc.spelling && !doc.spelling.changes.length" x-text="t('spelling_none')"></p>
+                      <template x-for="note in (doc.spelling ? doc.spelling.notes : [])" :key="note"><p class="small muted" x-text="note"></p></template>
+                      <template x-for="(c, i) in (doc.spelling ? doc.spelling.changes : [])" :key="i">
+                        <label class="change" @mouseenter="hover(c.line_id)" @mouseleave="hover(null)">
+                          <input type="checkbox" :checked="accepted.includes(i)" @change="toggleChange(i)">
+                          <span dir="auto" x-text="c.label"></span>
+                        </label>
+                      </template>
+                      <div class="actions">
+                        <button class="btn primary" @click="applySpelling()" :disabled="running() || !accepted.length" x-text="t('apply_n', {n: accepted.length})"></button>
+                        <button class="btn subtle" @click="dropSpelling()" :disabled="running()" x-text="t('close')"></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="section muted small" x-text="t('text_hint')"></div>
+                <table class="grid">
+                  <tbody>
+                    <template x-for="(l, i) in lines()" :key="l.id">
+                      <tr :class="{sel: selected === l.id}" @mouseenter="hover(l.id)" @mouseleave="hover(null)">
+                        <td class="num" x-text="i + 1"></td>
+                        <td class="cell"><input type="text" dir="auto" :value="l.text" :disabled="running()" :id="'line-' + l.id"
+                               :aria-label="t('line_n', {n: i + 1})" @focus="select(l.id, true)" @change="saveText(l, $event.target.value)"
+                               @keydown.enter="$event.target.blur()"></td>
+                        <td class="end" style="width:64px"><span class="conf" :class="{low: isLow(l)}" x-text="conf(l)"></span></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
               </div>
-              <ul class="plain">
-                <template x-for="(l, i) in lines()" :key="l.id">
-                  <li class="line-edit" :class="{sel: selected === l.id, low: isLow(l)}" @mouseenter="hover(l.id)" @mouseleave="hover(null)">
-                    <span class="n" x-text="i + 1"></span>
-                    <input type="text" dir="auto" :value="l.text" :disabled="running()" :id="'line-' + l.id"
-                           @focus="select(l.id, true)" @change="saveText(l, $event.target.value)"
-                           @keydown.enter="$event.target.blur()">
-                    <span class="conf" :class="{low: isLow(l)}" x-text="conf(l)"></span>
-                  </li>
-                </template>
-              </ul>
-            </div>
+            </template>
 
             <!-- step 4: the record -->
-            <div x-show="step === 4">
-              <div class="head">
-                <h2 x-text="t('step_4')"></h2>
-                <span class="chip" x-show="doc.report" :class="doc.report && doc.report.valid ? 'ok' : 'bad'"
-                      x-text="doc.report ? (doc.report.valid ? t('valid') : t('invalid')) + ' · ' + t('issues_n', {e: doc.report.errors, w: doc.report.warnings}) : ''"></span>
-              </div>
-              <div class="banner warn" x-show="doc.stale && doc.record">
-                <span x-text="t('stale')"></span>
-                <button @click="run('extract')" :disabled="running()" x-text="t('extract_again')"></button>
-              </div>
-              <div class="empty" x-show="!doc.record" x-text="t('no_record')"></div>
-              <template x-if="doc.record">
-                <div>
-                  <div class="row">
-                    <button @click="run('translate')" :disabled="running()" :title="t('tip_translate')" x-text="t('translate')"></button>
-                    <span class="grow"></span>
-                    <a class="button" :href="dl('json')" x-text="'JSON'"></a>
-                    <a class="button" :href="dl('text')" x-text="t('dl_text')"></a>
-                    <a class="button" :href="dl('xml' + page)" x-text="'PageXML'"></a>
-                    <a class="button primary" :href="dl('zip')" x-text="t('dl_all')"></a>
+            <template x-if="step === 4">
+              <div>
+                <div class="panel-head">
+                  <h2 x-text="t('step_4')"></h2>
+                  <span class="lozenge" x-show="doc.report" :class="doc.report && doc.report.valid ? 'success' : 'moved'"
+                        x-text="doc.report ? (doc.report.valid ? t('valid') : t('invalid')) : ''"></span>
+                  <span class="small muted" x-show="doc.report" x-text="doc.report ? t('issues_n', {e: doc.report.errors, w: doc.report.warnings}) : ''"></span>
+                  <span class="grow"></span>
+                  <template x-if="doc.record">
+                    <div class="toolbar">
+                      <button class="btn subtle icon" @click="run('translate')" :disabled="running()" :title="t('tip_translate')" :aria-label="t('translate')"><svg class="ic"><use href="#i-translate"/></svg></button>
+                      <a class="btn subtle" :href="dl('json')">JSON</a>
+                      <a class="btn subtle hide-s" :href="dl('text')" x-text="t('dl_text')"></a>
+                      <a class="btn subtle hide-s" :href="dl('xml' + page)">PageXML</a>
+                      <a class="btn primary" :href="dl('zip')"><svg class="ic"><use href="#i-download"/></svg><span x-text="t('dl_all')"></span></a>
+                    </div>
+                  </template>
+                </div>
+                <div class="section" x-show="doc.stale && doc.record">
+                  <div class="message warning">
+                    <svg class="ic l"><use href="#i-alert"/></svg>
+                    <div><strong x-text="t('stale')"></strong>
+                      <div class="actions"><button class="btn" @click="run('extract')" :disabled="running()" x-text="t('extract_again')"></button></div></div>
                   </div>
-                  <table class="record">
-                    <thead><tr><th x-text="t('th_field')"></th><th x-text="t('th_arabic')"></th><th x-text="t('th_french')"></th></tr></thead>
+                </div>
+                <div class="empty" x-show="!doc.record"><svg class="ic xl"><use href="#i-file"/></svg><p x-text="t('no_record')"></p></div>
+                <template x-if="doc.record">
+                  <table class="grid lined record">
+                    <thead><tr><th x-text="t('th_field')"></th><th x-text="t('th_arabic')"></th><th x-text="t('th_french')"></th><th class="w-icon"></th></tr></thead>
                     <template x-for="g in groups()" :key="g.name">
                       <tbody>
-                        <tr class="group"><td colspan="3" x-text="t('g_' + g.name)"></td></tr>
+                        <tr class="group"><th colspan="4" x-text="t('g_' + g.name)"></th></tr>
                         <template x-for="r in g.rows" :key="r.ar">
-                          <tr :class="rowClass(r)" @mouseenter="hoverField(r)" @mouseleave="hover(null)">
-                            <td><span x-text="t('f_' + r.label)"></span>
-                              <span class="edited" x-show="isEdited(r)" :title="t('edited')">✎</span></td>
-                            <td :colspan="r.fr ? 1 : 2">
+                          <tr :class="'is-' + rowClass(r)" @mouseenter="hoverField(r)" @mouseleave="hover(null)">
+                            <td style="width:30%"><span class="label" x-text="t('f_' + r.label)"></span><span class="key" x-text="r.fr ? r.ar + ' · ' + r.fr : r.ar"></span></td>
+                            <td class="cell" :colspan="r.fr ? 1 : 2">
                               <template x-if="r.ar === 'SEXE'">
-                                <select :disabled="running()" @change="saveField('SEXE', $event.target.value === '' ? '' : Number($event.target.value))">
+                                <select :disabled="running()" @change="saveField('SEXE', $event.target.value === '' ? '' : Number($event.target.value))" :aria-label="t('f_sex')">
                                   <option value="" :selected="doc.record.SEXE === ''">—</option>
                                   <option value="1" :selected="doc.record.SEXE === 1" x-text="t('male')"></option>
                                   <option value="0" :selected="doc.record.SEXE === 0" x-text="t('female')"></option>
                                 </select>
                               </template>
                               <template x-if="r.ar !== 'SEXE' && !isLong(r.ar)">
-                                <input type="text" dir="auto" :value="doc.record[r.ar]" :disabled="running()"
+                                <input type="text" dir="auto" :value="doc.record[r.ar]" :disabled="running()" :aria-label="r.ar"
                                        @change="saveField(r.ar, $event.target.value)" @keydown.enter="$event.target.blur()">
                               </template>
                               <template x-if="isLong(r.ar)">
-                                <textarea dir="auto" rows="3" :value="doc.record[r.ar]" :disabled="running()"
-                                          @change="saveField(r.ar, $event.target.value)"></textarea>
+                                <textarea dir="auto" rows="3" :value="doc.record[r.ar]" :disabled="running()" :aria-label="r.ar" @change="saveField(r.ar, $event.target.value)"></textarea>
                               </template>
                             </td>
                             <template x-if="r.fr">
-                              <td>
+                              <td class="cell">
                                 <template x-if="!isLong(r.fr)">
-                                  <input type="text" dir="ltr" :value="doc.record[r.fr]" :disabled="running()"
+                                  <input type="text" dir="ltr" :value="doc.record[r.fr]" :disabled="running()" :aria-label="r.fr"
                                          @change="saveField(r.fr, $event.target.value)" @keydown.enter="$event.target.blur()">
                                 </template>
                                 <template x-if="isLong(r.fr)">
-                                  <textarea dir="ltr" rows="3" :value="doc.record[r.fr]" :disabled="running()"
-                                            @change="saveField(r.fr, $event.target.value)"></textarea>
+                                  <textarea dir="ltr" rows="3" :value="doc.record[r.fr]" :disabled="running()" :aria-label="r.fr" @change="saveField(r.fr, $event.target.value)"></textarea>
                                 </template>
                               </td>
                             </template>
+                            <td class="w-icon">
+                              <template x-if="rowClass(r) === 'error'"><svg class="ic error" role="img" :aria-label="rowIssue(r)"><title x-text="rowIssue(r)"></title><use href="#i-error"/></svg></template>
+                              <template x-if="rowClass(r) === 'warning'"><svg class="ic warning" role="img" :aria-label="rowIssue(r)"><title x-text="rowIssue(r)"></title><use href="#i-alert"/></svg></template>
+                              <template x-if="!rowClass(r) && isEdited(r)"><svg class="ic blue" role="img" :aria-label="t('edited')"><title x-text="t('edited')"></title><use href="#i-edit"/></svg></template>
+                            </td>
                           </tr>
                         </template>
                       </tbody>
                     </template>
                   </table>
-
-                  <div class="card" x-show="(doc.comparisons || []).length">
-                    <div class="card-head"><strong x-text="t('compare_title')"></strong></div>
-                    <table class="compare">
-                      <thead><tr><th x-text="t('th_field')"></th><th x-text="t('page_1')"></th><th x-text="t('page_2')"></th><th></th></tr></thead>
-                      <tbody>
-                        <template x-for="c in (doc.comparisons || [])" :key="c.field">
-                          <tr :class="{bad: c.same === false}">
-                            <td x-text="fieldLabel(c.field)"></td><td dir="auto" x-text="c.page1"></td>
-                            <td dir="auto" x-text="c.page2 || '—'"></td>
-                            <td><span class="chip" :class="c.same === false ? 'bad' : (c.same ? 'ok' : 'warn')"
-                                      x-text="c.same === false ? t('differ') : (c.same ? t('same') : t('from_page_1'))"></span></td>
-                          </tr>
-                        </template>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div class="card" x-show="doc.report && doc.report.issues.length">
-                    <div class="card-head"><strong x-text="t('issues_title')"></strong></div>
-                    <ul class="plain issues">
-                      <template x-for="(issue, i) in (doc.report ? doc.report.issues : [])" :key="i">
-                        <li :class="issue.level"><b x-text="fieldLabel(issue.field)"></b> <span dir="auto" x-text="issue.message"></span></li>
-                      </template>
-                    </ul>
-                  </div>
-                  <details class="card" x-show="(doc.notes || []).length">
-                    <summary x-text="t('notes_title') + ' (' + (doc.notes || []).length + ')'"></summary>
-                    <ul class="plain notes">
-                      <template x-for="(note, i) in (doc.notes || [])" :key="i"><li dir="auto" x-text="note"></li></template>
-                    </ul>
-                  </details>
-                </div>
-              </template>
-            </div>
-          </div>
-        </div>
-
-        <footer class="wizard-nav">
-          <button @click="goStep(step - 1)" x-show="step > 1" x-text="'← ' + t('back')"></button>
-          <span class="grow"></span>
-          <button class="primary" x-show="step < 4" @click="next()" :disabled="running() || !canNext()" x-text="nextLabel() + ' →'"></button>
-          <button class="primary" x-show="step === 4" @click="newDoc()" x-text="t('new_act')"></button>
-        </footer>
-      </div>
-    </template>
-  </section>
-
-  <!-- ============================== settings ============================== -->
-  <section x-show="view === 'settings'" class="page">
-    <div class="head"><h1 x-text="t('nav_settings')"></h1></div>
-    <template x-if="settings">
-      <form @submit.prevent="saveSettings()">
-        <div class="card">
-          <div class="card-head"><strong x-text="t('set_run')"></strong></div>
-          <label class="check"><input type="checkbox" x-model="settings.values.auto_run"><span x-text="t('set_auto_run')"></span></label>
-          <label class="check"><input type="checkbox" x-model="settings.values.use_ner"><span x-text="t('set_ner')"></span></label>
-          <label class="check"><input type="checkbox" x-model="settings.values.use_french_ner" :disabled="!settings.values.use_ner"><span x-text="t('set_french_ner')"></span></label>
-          <label class="check"><input type="checkbox" x-model="settings.values.use_translation"><span x-text="t('set_translation')"></span></label>
-          <p class="hint" x-show="settings.translation_unavailable" x-text="t('set_model_missing') + ' ' + (settings.translation_unavailable || '')"></p>
-          <label class="field"><span x-text="t('set_threshold') + ' (' + Math.round(settings.values.confidence_threshold * 100) + ' %)'"></span>
-            <input type="range" min="0.3" max="0.99" step="0.01" x-model.number="settings.values.confidence_threshold"></label>
-        </div>
-        <div class="card">
-          <div class="card-head"><strong x-text="t('set_compute')"></strong>
-            <span class="chip" x-text="t('set_in_use') + ' ' + settings.device"></span></div>
-          <label class="field"><span x-text="t('set_device')"></span>
-            <select x-model="settings.values.device">
-              <option value="auto" x-text="t('set_device_auto')"></option>
-              <template x-for="d in settings.devices" :key="d.id"><option :value="d.id" x-text="d.id + ' — ' + d.name"></option></template>
-            </select></label>
-          <label class="field"><span x-text="t('set_threads')"></span>
-            <input type="number" min="1" :max="settings.limits.cpu_threads[1]" x-model.number="settings.values.cpu_threads"></label>
-          <p class="hint" x-text="t('set_threads_hint')"></p>
-          <label class="field"><span x-text="t('set_keep')"></span>
-            <input type="number" min="0" max="86400" step="60" x-model.number="settings.values.keep_models_seconds"></label>
-          <p class="hint" x-text="t('set_keep_hint')"></p>
-          <div class="row"><button type="button" @click="releaseModels()" x-text="t('set_release')"></button>
-            <span class="hint" x-text="released"></span></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><strong x-text="t('set_models')"></strong></div>
-          <label class="field"><span x-text="t('set_spell_model')"></span>
-            <input type="text" x-model="settings.values.spell_model" :placeholder="settings.spell_model"></label>
-          <label class="field"><span x-text="t('set_translate_model')"></span>
-            <input type="text" x-model="settings.values.translate_model" :placeholder="settings.translate_model"></label>
-          <p class="hint" x-text="t('set_models_hint')"></p>
-        </div>
-        <div class="card">
-          <div class="card-head"><strong x-text="t('set_storage')"></strong></div>
-          <label class="field"><span x-text="t('set_retention')"></span>
-            <input type="number" min="1" max="168" x-model.number="settings.values.retention_hours"></label>
-          <p class="hint" x-text="t('set_retention_hint')"></p>
-        </div>
-        <div class="row"><button class="primary" type="submit" :disabled="loading" x-text="t('save')"></button></div>
-      </form>
-    </template>
-  </section>
-
-  <!-- ============================== monitoring ============================== -->
-  <section x-show="view === 'monitor'" class="page wide">
-    <div class="head">
-      <h1 x-text="t('nav_monitor')"></h1>
-      <span class="row tight">
-        <template x-for="m in [5, 15, 60]" :key="m">
-          <button :class="{on: minutes === m}" @click="minutes = m; loadMonitor()" x-text="m + ' min'"></button>
-        </template>
-        <a class="button" href="/metrics" target="_blank" rel="noopener">/metrics</a>
-      </span>
-    </div>
-    <template x-if="mon">
-      <div>
-        <div class="tiles">
-          <template x-for="tile in tiles()" :key="tile.key">
-            <div class="tile">
-              <div class="tile-head"><span x-text="tile.title"></span><b x-text="tile.value"></b></div>
-              <div class="chart" x-html="tile.chart"></div>
-              <div class="hint" x-text="tile.note"></div>
-            </div>
-          </template>
-        </div>
-        <div class="cards">
-          <div class="card">
-            <div class="card-head"><strong x-text="t('mon_steps')"></strong></div>
-            <table class="list small">
-              <thead><tr><th x-text="t('mon_step')"></th><th x-text="t('mon_count')"></th><th x-text="t('mon_mean')"></th>
-                <th>p95</th><th x-text="t('mon_last')"></th><th x-text="t('mon_errors')"></th></tr></thead>
-              <tbody>
-                <template x-for="name in Object.keys(mon.summary)" :key="name">
-                  <tr><td x-text="t('job_' + name)"></td><td x-text="mon.summary[name].count"></td>
-                    <td x-text="secs(mon.summary[name].mean)"></td><td x-text="secs(mon.summary[name].p95)"></td>
-                    <td x-text="secs(mon.summary[name].last)"></td>
-                    <td :class="{badtext: mon.summary[name].errors}" x-text="mon.summary[name].errors"></td></tr>
                 </template>
-              </tbody>
-            </table>
-            <p class="hint" x-show="!Object.keys(mon.summary).length" x-text="t('mon_none')"></p>
-          </div>
-          <div class="card">
-            <div class="card-head"><strong x-text="t('mon_models')"></strong>
-              <span class="chip" x-text="mon.device"></span></div>
-            <ul class="plain">
-              <template x-for="m in mon.models" :key="m.kind + m.device">
-                <li><span class="chip ok" x-text="m.device"></span> <span x-text="m.kind + ' — ' + m.model"></span></li>
-              </template>
-            </ul>
-            <p class="hint" x-show="!mon.models.length" x-text="t('mon_no_models')"></p>
-            <p class="hint" x-text="t('mon_uptime') + ' ' + duration(mon.uptime)"></p>
+              </div>
+            </template>
           </div>
         </div>
-        <div class="card">
-          <div class="card-head"><strong x-text="t('mon_recent')"></strong></div>
-          <table class="list small">
-            <thead><tr><th x-text="t('mon_when')"></th><th x-text="t('mon_step')"></th><th x-text="t('mon_seconds')"></th>
-              <th x-text="t('set_device')"></th><th x-text="t('mon_lines')"></th><th></th></tr></thead>
+
+        <!-- step 4, under the two panels: the two pages compared, the validation, the notes -->
+        <template x-if="step === 4 && doc.record">
+          <div>
+            <div class="panel" style="margin-top:16px" x-show="(doc.comparisons || []).length">
+              <div class="panel-head"><h2 x-text="t('compare_title')"></h2></div>
+              <table class="grid lined">
+                <thead><tr><th x-text="t('th_field')"></th><th x-text="t('page_1')"></th><th x-text="t('page_2')"></th><th></th></tr></thead>
+                <tbody>
+                  <template x-for="c in (doc.comparisons || [])" :key="c.field">
+                    <tr :class="{'is-error': c.same === false}">
+                      <td x-text="fieldLabel(c.field)"></td><td dir="auto" x-text="c.page1"></td><td dir="auto" x-text="c.page2 || '—'"></td>
+                      <td class="end"><span class="lozenge" :class="c.same === false ? 'removed' : (c.same ? 'success' : 'progress')"
+                                x-text="c.same === false ? t('differ') : (c.same ? t('same') : t('from_page_1'))"></span></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel" style="margin-top:16px" x-show="doc.report && doc.report.issues.length">
+              <div class="panel-head"><h2 x-text="t('issues_title')"></h2><span class="badge" x-text="doc.report ? doc.report.issues.length : 0"></span></div>
+              <table class="grid">
+                <tbody>
+                  <template x-for="(issue, i) in (doc.report ? doc.report.issues : [])" :key="i">
+                    <tr>
+                      <td class="w-icon"><svg class="ic" :class="issue.level === 'error' ? 'error' : 'warning'"><use :href="issue.level === 'error' ? '#i-error' : '#i-alert'"/></svg></td>
+                      <td style="width:34%" x-text="fieldLabel(issue.field)"></td><td dir="auto" class="muted" x-text="issue.message"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel" style="margin-top:16px" x-show="(doc.notes || []).length" x-data="{open: false}">
+              <button class="panel-head btn subtle" style="width:100%; border-radius:var(--radius); height:auto; justify-content:flex-start" @click="open = !open" :aria-expanded="open">
+                <svg class="ic" :style="open ? 'transform:rotate(90deg)' : ''"><use href="#i-right"/></svg>
+                <h2 x-text="t('notes_title')"></h2><span class="badge" x-text="(doc.notes || []).length"></span>
+              </button>
+              <table class="grid" x-show="open">
+                <tbody><template x-for="(note, i) in (doc.notes || [])" :key="i"><tr><td class="small muted" dir="auto" x-text="note"></td></tr></template></tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <footer class="statusbar" aria-live="polite">
+        <span x-show="running()" class="run"><span class="spin" style="width:12px;height:12px"></span><b class="run" x-text="jobLabel()"></b></span>
+        <span x-show="!running()"><span x-text="t('status')"></span>
+          <b :class="doc.job && doc.job.state === 'error' ? 'bad' : 'ok'" x-text="statusText()"></b></span>
+        <span x-show="lastDuration !== null"><span x-text="t('time')"></span><b x-text="secs(lastDuration)"></b></span>
+        <span x-show="step > 1"><span x-text="t('page_short', {n: page})"></span><b x-text="t('lines_count', {n: lines().length})"></b></span>
+        <span x-show="dirtyCount()"><span class="dot red"></span><b x-text="t('to_read', {n: dirtyCount()})"></b></span>
+        <span x-show="saving"><span class="spin" style="width:12px;height:12px"></span><span x-text="t('saving')"></span></span>
+        <span class="grow"></span>
+        <span class="hide-s" x-show="step === 2" x-text="t('lines_help')"></span>
+        <span><svg class="ic"><use href="#i-cpu"/></svg><b x-text="settings ? settings.device : '—'"></b></span>
+      </footer>
+    </div>
+  </template>
+</section>
+
+<!-- ============================== settings ============================== -->
+<section x-show="view === 'settings'" class="page">
+  <div class="page-head"><h1 x-text="t('nav_settings')"></h1></div>
+  <template x-if="settings">
+    <form @submit.prevent="saveSettings()">
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('set_appearance')"></h2></div>
+        <div class="form-section">
+          <label class="lbl" x-text="t('theme')"></label>
+          <div class="ctl"><div class="segmented">
+            <template x-for="m in ['light', 'dark', 'system']" :key="m">
+              <button type="button" class="btn" :class="{on: theme === m}" @click="setTheme(m)">
+                <svg class="ic"><use :href="'#i-' + {light: 'sun', dark: 'moon', system: 'monitor'}[m]"/></svg><span x-text="t('theme_' + m)"></span></button>
+            </template>
+          </div></div>
+          <label class="lbl" x-text="t('language')"></label>
+          <div class="ctl"><select x-model="lang" @change="setLang(lang)" style="max-width:220px">
+            <option value="en">English</option><option value="fr">Français</option><option value="ar">العربية</option></select></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('set_run')"></h2></div>
+        <div class="form-section">
+          <span class="lbl"><span x-text="t('set_auto_run')"></span><span class="help" x-text="t('set_auto_run_help')"></span></span>
+          <div class="ctl"><label class="switch"><input type="checkbox" x-model="settings.values.auto_run" :aria-label="t('set_auto_run')"><span></span></label></div>
+          <span class="lbl"><span x-text="t('set_ner')"></span><span class="help" x-text="t('set_ner_help')"></span></span>
+          <div class="ctl"><label class="switch"><input type="checkbox" x-model="settings.values.use_ner" :aria-label="t('set_ner')"><span></span></label></div>
+          <span class="lbl"><span x-text="t('set_french_ner')"></span></span>
+          <div class="ctl"><label class="switch"><input type="checkbox" x-model="settings.values.use_french_ner" :disabled="!settings.values.use_ner" :aria-label="t('set_french_ner')"><span></span></label></div>
+          <span class="lbl"><span x-text="t('set_translation')"></span><span class="help" x-text="settings.translation_unavailable ? t('set_model_missing') + ' ' + settings.translation_unavailable : t('set_translation_help')"></span></span>
+          <div class="ctl"><label class="switch"><input type="checkbox" x-model="settings.values.use_translation" :aria-label="t('set_translation')"><span></span></label></div>
+          <span class="lbl"><span x-text="t('set_threshold')"></span><span class="help" x-text="t('set_threshold_help')"></span></span>
+          <div class="ctl"><input type="range" min="0.3" max="0.99" step="0.01" x-model.number="settings.values.confidence_threshold" :aria-label="t('set_threshold')">
+            <span class="badge blue" style="min-width:44px" x-text="Math.round(settings.values.confidence_threshold * 100) + ' %'"></span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('set_compute')"></h2><span class="grow"></span>
+          <span class="lozenge progress" x-text="t('set_in_use') + ' ' + settings.device"></span></div>
+        <div class="form-section">
+          <span class="lbl" x-text="t('set_device')"></span>
+          <div class="ctl"><select x-model="settings.values.device" :aria-label="t('set_device')">
+            <option value="auto" x-text="t('set_device_auto')"></option>
+            <template x-for="d in settings.devices" :key="d.id"><option :value="d.id" x-text="d.id + ' — ' + d.name"></option></template>
+          </select></div>
+          <span class="lbl"><span x-text="t('set_threads')"></span><span class="help" x-text="t('set_threads_hint')"></span></span>
+          <div class="ctl"><input type="number" min="1" :max="settings.limits.cpu_threads[1]" x-model.number="settings.values.cpu_threads" style="max-width:120px" :aria-label="t('set_threads')"></div>
+          <span class="lbl"><span x-text="t('set_keep')"></span><span class="help" x-text="t('set_keep_hint')"></span></span>
+          <div class="ctl"><input type="number" min="0" max="86400" step="60" x-model.number="settings.values.keep_models_seconds" style="max-width:120px" :aria-label="t('set_keep')"></div>
+          <span class="lbl"><span x-text="t('set_release')"></span><span class="help" x-text="released || t('set_release_help')"></span></span>
+          <div class="ctl"><button type="button" class="btn" @click="releaseModels()"><svg class="ic"><use href="#i-refresh"/></svg><span x-text="t('set_release_btn')"></span></button></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('set_models')"></h2></div>
+        <div class="form-section">
+          <span class="lbl"><span x-text="t('set_spell_model')"></span><span class="help" x-text="t('set_models_hint')"></span></span>
+          <div class="ctl"><input type="text" x-model="settings.values.spell_model" :placeholder="settings.spell_model" :aria-label="t('set_spell_model')"></div>
+          <span class="lbl" x-text="t('set_translate_model')"></span>
+          <div class="ctl"><input type="text" x-model="settings.values.translate_model" :placeholder="settings.translate_model" :aria-label="t('set_translate_model')"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('set_storage')"></h2></div>
+        <div class="form-section">
+          <span class="lbl"><span x-text="t('set_retention')"></span><span class="help" x-text="t('set_retention_hint')"></span></span>
+          <div class="ctl"><input type="number" min="1" max="168" x-model.number="settings.values.retention_hours" style="max-width:120px" :aria-label="t('set_retention')"></div>
+        </div>
+        <div class="form-foot">
+          <button type="button" class="btn subtle" @click="loadSettings()" x-text="t('cancel')"></button>
+          <button class="btn primary" type="submit" :disabled="loading" x-text="t('save')"></button>
+        </div>
+      </div>
+    </form>
+  </template>
+</section>
+
+<!-- ============================== monitoring ============================== -->
+<section x-show="view === 'monitor'" class="page" style="max-width:1400px">
+  <div class="page-head">
+    <h1 x-text="t('nav_monitor')"></h1>
+    <span class="live"><span class="dot"></span><span x-text="t('mon_live')"></span></span>
+    <span class="grow"></span>
+    <div class="segmented">
+      <template x-for="m in [5, 15, 60]" :key="m">
+        <button class="btn" :class="{on: minutes === m}" @click="minutes = m; loadMonitor()" x-text="m === 60 ? '1 h' : m + ' min'"></button>
+      </template>
+    </div>
+    <a class="btn subtle" href="/metrics" target="_blank" rel="noopener"><svg class="ic"><use href="#i-external"/></svg><span>/metrics</span></a>
+  </div>
+  <template x-if="mon">
+    <div>
+      <div class="dash">
+        <template x-for="tile in tiles()" :key="tile.key">
+          <div class="stat">
+            <div class="stat-head"><span class="stat-title" x-text="tile.title"></span><span class="stat-value" x-html="tile.value"></span></div>
+            <div class="chart" x-html="tile.chart"></div>
+            <div class="stat-note" x-text="tile.note"></div>
+          </div>
+        </template>
+      </div>
+      <div class="dash2">
+        <div class="panel">
+          <div class="panel-head"><h2 x-text="t('mon_steps')"></h2></div>
+          <table class="grid">
+            <thead><tr><th x-text="t('mon_step')"></th><th class="end" x-text="t('mon_count')"></th><th class="end" x-text="t('mon_mean')"></th>
+              <th class="end">p95</th><th class="end" x-text="t('mon_last')"></th><th class="end" x-text="t('mon_errors')"></th></tr></thead>
             <tbody>
-              <template x-for="(s, i) in mon.steps" :key="i">
-                <tr><td x-text="clock(s.at)"></td><td x-text="t('job_' + s.step)"></td><td x-text="secs(s.seconds)"></td>
-                  <td x-text="s.device"></td><td x-text="s.lines === null ? '—' : s.lines"></td>
-                  <td><span class="chip" :class="s.ok ? 'ok' : 'bad'" x-text="s.ok ? 'ok' : t('mon_failed')"></span></td></tr>
+              <template x-for="name in Object.keys(mon.summary)" :key="name">
+                <tr><td x-text="t('job_' + name)"></td><td class="end" x-text="mon.summary[name].count"></td>
+                  <td class="end" x-text="secs(mon.summary[name].mean)"></td><td class="end" x-text="secs(mon.summary[name].p95)"></td>
+                  <td class="end" x-text="secs(mon.summary[name].last)"></td>
+                  <td class="end"><span class="lozenge" :class="mon.summary[name].errors ? 'removed' : ''" x-text="mon.summary[name].errors"></span></td></tr>
               </template>
             </tbody>
           </table>
-          <p class="hint" x-show="!mon.steps.length" x-text="t('mon_none')"></p>
+          <div class="empty" x-show="!Object.keys(mon.summary).length"><p x-text="t('mon_none')"></p></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2 x-text="t('mon_models')"></h2><span class="grow"></span><span class="lozenge progress" x-text="mon.device"></span></div>
+          <table class="grid">
+            <tbody>
+              <template x-for="m in mon.models" :key="m.kind + m.device">
+                <tr><td><span class="dot green"></span></td><td x-text="m.kind"></td><td class="mono" x-text="m.model"></td><td class="end muted" x-text="m.device"></td></tr>
+              </template>
+            </tbody>
+          </table>
+          <div class="empty" x-show="!mon.models.length" style="padding:24px"><p x-text="t('mon_no_models')"></p></div>
+          <div class="section small muted" style="padding:12px 16px; border-top:1px solid var(--border)" x-text="t('mon_uptime') + ' ' + duration(mon.uptime)"></div>
         </div>
       </div>
-    </template>
-  </section>
-</main>
+      <div class="panel">
+        <div class="panel-head"><h2 x-text="t('mon_recent')"></h2></div>
+        <table class="grid">
+          <thead><tr><th x-text="t('mon_when')"></th><th x-text="t('mon_step')"></th><th class="end" x-text="t('mon_seconds')"></th>
+            <th x-text="t('set_device')"></th><th class="end" x-text="t('mon_lines')"></th><th class="end" x-text="t('th_state')"></th></tr></thead>
+          <tbody>
+            <template x-for="(s, i) in mon.steps" :key="i">
+              <tr><td class="mono" x-text="clock(s.at)"></td><td x-text="t('job_' + s.step)"></td><td class="end" x-text="secs(s.seconds)"></td>
+                <td class="muted" x-text="s.device"></td><td class="end" x-text="s.lines === null ? '—' : s.lines"></td>
+                <td class="end"><span class="lozenge" :class="s.ok ? 'success' : 'removed'" x-text="s.ok ? 'ok' : t('mon_failed')"></span></td></tr>
+            </template>
+          </tbody>
+        </table>
+        <div class="empty" x-show="!mon.steps.length"><p x-text="t('mon_none')"></p></div>
+      </div>
+    </div>
+  </template>
+</section>
+</div>
 
 <!-- the camera -->
-<div class="modal" x-show="camera.open" @keydown.escape.window="closeCamera()">
-  <div class="sheet">
-    <div class="card-head"><strong x-text="t('camera_title', {n: camera.page})"></strong>
-      <button class="ghost" @click="closeCamera()">✕</button></div>
-    <video x-ref="video" autoplay playsinline muted></video>
-    <p class="hint" x-text="camera.error || t('camera_hint')"></p>
-    <div class="row">
-      <button class="primary" @click="shoot()" :disabled="!camera.ready" x-text="t('take_photo')"></button>
-      <label class="button"><input type="file" accept="image/*" capture="environment" hidden
+<div class="blanket" x-show="camera.open" @keydown.escape.window="closeCamera()" @click.self="closeCamera()">
+  <div class="modal" role="dialog" aria-modal="true" :aria-label="t('camera_title', {n: camera.page})">
+    <div class="modal-head"><h2 x-text="t('camera_title', {n: camera.page})"></h2>
+      <button class="btn subtle icon" @click="closeCamera()" :aria-label="t('close')"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <video x-ref="video" autoplay playsinline muted></video>
+      <div class="message" :class="camera.error ? 'warning' : ''" style="margin-top:12px">
+        <svg class="ic"><use :href="camera.error ? '#i-alert' : '#i-info'"/></svg><span x-text="camera.error || t('camera_hint')"></span></div>
+    </div>
+    <div class="modal-foot">
+      <label class="btn subtle"><input type="file" accept="image/*" capture="environment" hidden
              @change="upload(camera.page, $event.target.files[0]); closeCamera(); $event.target.value = ''">
-        <span x-text="t('camera_device')"></span></label>
-      <button @click="closeCamera()" x-text="t('close')"></button>
+        <svg class="ic"><use href="#i-upload"/></svg><span x-text="t('camera_device')"></span></label>
+      <span class="grow"></span>
+      <button class="btn subtle" @click="closeCamera()" x-text="t('cancel')"></button>
+      <button class="btn primary" @click="shoot()" :disabled="!camera.ready"><svg class="ic"><use href="#i-camera"/></svg><span x-text="t('take_photo')"></span></button>
     </div>
   </div>
 </div>
 
-<div class="toasts">
+<div class="flags" aria-live="assertive">
   <template x-for="toast in toasts" :key="toast.id">
-    <div class="toast" :class="toast.kind" x-text="toast.text" @click="toasts = toasts.filter(x => x.id !== toast.id)"></div>
+    <div class="flag" :class="toast.kind || 'info'" @click="toasts = toasts.filter(x => x.id !== toast.id)">
+      <svg class="ic l"><use :href="toast.kind === 'bad' ? '#i-error' : (toast.kind === 'ok' ? '#i-success' : '#i-info')"/></svg>
+      <span x-text="toast.text"></span>
+    </div>
   </template>
 </div>
 </body>
